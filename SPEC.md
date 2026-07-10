@@ -74,7 +74,7 @@ create table leads (
 | `FIRECRAWL_API_KEY` | Firecrawl scraping |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway (auto-provided via OIDC when deployed on Vercel) |
 | `LLM_MODEL` | Gateway model string, e.g. `deepseek/deepseek-chat` or `google/gemini-2.5-flash-lite` |
-| `BLOB_READ_WRITE_TOKEN` | Vercel Blob (auto-provided when Blob store is connected) |
+| `BLOB_STORE_ID` | Vercel Blob (auto-provided; SDK v2 auths via OIDC token + store ID) |
 | `MAILERLITE_API_KEY` | MailerLite API |
 | `MAILERLITE_GROUP_ID` | Group whose automation sends the 3-email sequence |
 | `MAILERLITE_WEBHOOK_SECRET` | Optional — verify webhook signatures |

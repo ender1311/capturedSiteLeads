@@ -23,7 +23,7 @@ alter table leads enable row level security;
 create or replace function increment_engagement(lead_email text, counter text)
 returns void
 language plpgsql
-security definer
+security invoker
 as $$
 begin
   if counter = 'opens' then
@@ -33,3 +33,6 @@ begin
   end if;
 end;
 $$;
+
+-- Only the service role (used by the app) may call this — not the public Data API
+revoke execute on function increment_engagement(text, text) from public, anon, authenticated;
