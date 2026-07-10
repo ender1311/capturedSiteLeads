@@ -1,3 +1,5 @@
+import { redirect } from "next/navigation";
+import { auth, signOut } from "@/auth";
 import { supabaseAdmin, type Lead } from "@/lib/supabase";
 
 export const dynamic = "force-dynamic";
@@ -12,6 +14,9 @@ function Stat({ label, value }: { label: string; value: string | number }) {
 }
 
 export default async function Dashboard() {
+  const session = await auth();
+  if (!session?.user) redirect("/api/auth/signin?callbackUrl=/dashboard");
+
   if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     return (
       <main className="mx-auto max-w-3xl p-8">
@@ -49,7 +54,22 @@ export default async function Dashboard() {
 
   return (
     <main className="mx-auto max-w-6xl p-8">
-      <h1 className="text-2xl font-bold">Lead Engagement Dashboard</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Lead Engagement Dashboard</h1>
+        <form
+          action={async () => {
+            "use server";
+            await signOut({ redirectTo: "/api/auth/signin" });
+          }}
+        >
+          <span className="mr-3 text-sm text-zinc-500">
+            {session.user.email}
+          </span>
+          <button className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800">
+            Sign out
+          </button>
+        </form>
+      </div>
 
       <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
         <Stat label="Total leads" value={total} />

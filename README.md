@@ -14,6 +14,15 @@ cp .env.example .env.local   # fill in the keys
 npm run dev
 ```
 
+## Access control
+
+Google sign-in (Auth.js) protects every page. Only the emails hardcoded in `auth.ts` (`danluk1311@gmail.com`, `maggiemluk@gmail.com`) can sign in. The machine-to-machine routes (`/api/lead`, `/api/webhook/mailerlite`) are exempt — they use their own shared-secret/signature auth.
+
+Google OAuth client setup (one-time, console.cloud.google.com → APIs & Services → Credentials → Create OAuth client ID → Web application):
+
+- Authorized redirect URIs: `http://localhost:3000/api/auth/callback/google` and `https://<your-domain>/api/auth/callback/google`
+- Put the client ID/secret in `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET`, and set `AUTH_SECRET` (`npx auth secret`).
+
 ### One-time service setup
 
 1. **Supabase**: create a free project, run `supabase/schema.sql` in the SQL editor, copy the URL + service-role key.

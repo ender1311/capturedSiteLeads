@@ -17,6 +17,7 @@ Maggie's WordPress site collects leads (name, email, site URL). This app receive
    - **Supabase** inserts the lead row.
 3. **`POST /api/webhook/mailerlite`**: MailerLite open/click webhook events → increment engagement counters in Supabase.
 4. **`GET /dashboard`**: leads table + open/click/conversion stats from Supabase.
+5. **Auth**: Google sign-in via Auth.js; only `danluk1311@gmail.com` and `maggiemluk@gmail.com` (allowlist in `auth.ts`) can access pages. `proxy.ts` guards everything except the machine-to-machine API routes, which use shared secrets.
 
 ## Stack & Costs (zero to start)
 
@@ -68,6 +69,8 @@ create table leads (
 | Key | Purpose |
 |---|---|
 | `LEAD_WEBHOOK_SECRET` | Shared secret the WP form webhook must send |
+| `AUTH_SECRET` | Auth.js session encryption (`npx auth secret`) |
+| `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` | Google OAuth client for sign-in |
 | `FIRECRAWL_API_KEY` | Firecrawl scraping |
 | `AI_GATEWAY_API_KEY` | Vercel AI Gateway (auto-provided via OIDC when deployed on Vercel) |
 | `LLM_MODEL` | Gateway model string, e.g. `deepseek/deepseek-chat` or `google/gemini-2.5-flash-lite` |
