@@ -18,6 +18,7 @@ const leadSchema = z.object({
     .min(4)
     .transform((u) => (/^https?:\/\//i.test(u) ? u : `https://${u}`))
     .pipe(z.string().url()),
+  pain: z.string().max(500).optional(),
 });
 
 function authorized(req: NextRequest): boolean {
@@ -62,11 +63,12 @@ async function parseBody(req: NextRequest): Promise<unknown> {
       (v) => v !== email && /^(https?:\/\/)?[\w-]+(\.[\w-]+)+/.test(v) && !v.includes("@")
     );
   const name = fields["name"] ?? byKey(/name/) ?? undefined;
+  const pain = fields["pain"] ?? byKey(/pain|goal|struggl|challenge|biggest/);
 
   if (!email || !site_url || !name) {
     console.warn("Lead form keys received:", JSON.stringify(Object.keys(fields)));
   }
-  return { name, email, site_url };
+  return { name, email, site_url, pain };
 }
 
 export async function POST(req: NextRequest) {
@@ -81,7 +83,7 @@ export async function POST(req: NextRequest) {
       { status: 400 }
     );
   }
-  const { name, email, site_url } = parsed.data;
+  const { name, email, site_url, pain } = parsed.data;
   const supabase = supabaseAdmin();
 
   const { data: lead, error: insertError } = await supabase
@@ -102,6 +104,7 @@ export async function POST(req: NextRequest) {
         name,
         siteUrl: site_url,
         scrapedMarkdown: scraped,
+        pain,
       });
       const pdf = await htmlToPdf(reportHtml);
       const pdfUrl = await storePdf(pdf, email);

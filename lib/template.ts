@@ -4,6 +4,7 @@ export type Opportunity = {
   headline: string;
   noticed: string;
   whyItMatters: string;
+  fixFraming: string;
   fixes: string[];
 };
 
@@ -30,11 +31,11 @@ const bullet = `
   </svg>`;
 
 const QUESTIONS = [
-  ["What can you do for me?", "Within seconds: Am I in the right place? Do you serve people like me? What's the next step? This is your hero section."],
-  ["Why should I trust you?", "They want to connect with you, but framed around their desires and pain points, not just facts about you. This is your guide section."],
+  ["What can you do for me?", "Within seconds: am I in the right place? Do you serve people like me? What's the next step? This is your hero section."],
+  ["Why should I trust you?", "They want to connect with you, framed around their desires and pain points, not just facts about you. This is your guide section."],
   ["What is it like to work with you?", "A clear snapshot of your services with an easy path to learn more — words and photos working together. This is your portfolio section."],
-  ["Have you done this before?", "Social proof that you've delivered — even if they don't read every word, testimonials build enormous trust. This is your testimonial section."],
-  ["How do I get started?", "Make the next step unmissable — and use it to showcase what makes working with you special from start to finish. This is your steps section."],
+  ["Have you done this before?", "Social proof that you've delivered. Even if they don't read every word, testimonials build enormous trust. This is your testimonial section."],
+  ["How do I get started?", "Make the next step unmissable, and use it to showcase what makes working with you special. This is your steps section."],
 ];
 
 export function renderReportHtml(input: {
@@ -65,6 +66,7 @@ export function renderReportHtml(input: {
     </div>
     <div class="card outlined">
       <div class="card-label olive">HOW TO MAKE IT RIGHT</div>
+      <p class="fix-framing">${esc(o.fixFraming)}</p>
       ${o.fixes.map((f) => `<div class="fix">${bullet}<p>${esc(f)}</p></div>`).join("")}
     </div>
   </div>`
@@ -93,6 +95,7 @@ export function renderReportHtml(input: {
   .cover .prepared { font-family: 'Lora', serif; font-style: italic; color: #fff; font-size: 23px; margin-top: 34px; }
   .cover .lead-name { color: #fff; font-weight: 900; font-size: 30px; margin-top: 10px; }
   .cover .lead-site { color: #e6efef; font-size: 16px; margin-top: 10px; text-decoration: underline; }
+  .cover .cover-byline { color: #cfe0e0; font-size: 13px; margin-top: 26px; }
   .wave { position: absolute; bottom: 0; left: 0; width: 100%; }
   .cover .logo, .final .logo { position: absolute; right: 44px; bottom: 34px; width: 190px; }
 
@@ -122,6 +125,7 @@ export function renderReportHtml(input: {
   .card.dark p { color: #f2f6f5; }
   .fix { display: flex; gap: 14px; margin-top: 13px; }
   .fix p { margin: 0; }
+  .fix-framing { font-weight: 700; }
 
   /* ---------- next / final ---------- */
   .next { padding: 72px 76px; }
@@ -141,20 +145,21 @@ export function renderReportHtml(input: {
   <div class="page cover">
     <div class="sparks-tr">${spark(120, "#3d7b7f", 0.9)}${spark(64, "#a0a93f", 0.55)}</div>
     <div class="sparks-ml">${spark(88, "#a0a93f", 0.5)}</div>
-    <div><span class="badge">Personalized Website Review</span></div>
+    <div><span class="badge">Personalized Website Analysis</span></div>
     <h1>Dream Client<br>Roadmap</h1>
     <div class="bar"></div>
-    <div class="prepared">prepared for</div>
+    <div class="prepared">prepared exclusively for</div>
     <div class="lead-name">${esc(input.name)}</div>
     <div class="lead-site">${esc(domain)}</div>
+    <div class="cover-byline">From Maggie &middot; Captured Sites &middot; ${new Date().toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}</div>
     <svg class="wave" viewBox="0 0 816 260" preserveAspectRatio="none" height="260"><path fill="#143133" d="M0,140 C170,40 320,220 520,150 C660,100 750,60 816,90 L816,260 L0,260 Z"/></svg>
     <img class="logo" src="${LOGO_PNG}" alt="captured">
   </div>
 
   <div class="page white intro">
-    <div class="label">WHAT WE DO</div>
-    <h2>The secret to inquiry generating websites</h2>
-    <p class="body">We've analyzed what makes photographer websites convert, and it comes down to a handful of specific questions visitors need answered before they feel confident reaching out. We reverse-engineered that into an ideal layout shown below that turns a beautiful website into one to get you fully booked.</p>
+    <div class="label">THE FOUNDATION</div>
+    <h2>What every visitor is asking when they land on your site</h2>
+    <p class="body">Before I show you what I found on your site, here's the framework I use. When a photographer's website answers these five questions clearly and in order, visitors move naturally toward the contact form. When it doesn't, they drop off before ever reaching out.</p>
     ${QUESTIONS.map(
       ([q, a], i) => `
     <div class="qrow">
@@ -162,7 +167,7 @@ export function renderReportHtml(input: {
       <div><h3>${q}</h3><p>${a}</p></div>
     </div>`
     ).join("")}
-    <p class="kicker">When these questions are answered clearly and in order, visitors move naturally toward your contact form. Here is what I found on your site:</p>
+    <p class="kicker">When these questions are answered clearly and in order, visitors move naturally toward your contact form. Here's what I found on your site.</p>
   </div>
 
   ${oppPages}
@@ -170,10 +175,11 @@ export function renderReportHtml(input: {
   <div class="page dark-bg next">
     <div class="label">WHAT HAPPENS NEXT</div>
     <h2>Your site is closer than you think to converting visitors into bookings.</h2>
-    <p class="body">You can absolutely take what I shared and work on it yourself, and those changes will help. It's kind of like editing a RAW photo. You can push it pretty far in post by tweaking, but at some point you realize the foundation like lighting and settings had to be right from the start. Your website works the same way. The biggest shift happens when the whole site is built from the ground up with the right strategy.</p>
-    <p class="quote">Captured Sites approaches your website like a client-generating machine, because that's exactly how you're going to get more of the inquires you want.</p>
-    <p class="body">And this is what we do all day, every day, exclusively for photographers. Done for you websites with SEO build in, and I love doing it. If you want to explore what it would look like to have it completely handled for you, I'd love to show you. You can click the link below to book a free Tour Call and we can see if we can help you out.</p>
-    <a class="btn" href="${esc(input.ctaUrl)}">Watch Now</a>
+    <p class="body">You can absolutely take what I shared and work on it yourself, and those changes will help. It's kind of like editing a RAW photo. You can push it pretty far in post by tweaking, but at some point you realize the foundation — like lighting and settings — had to be right from the start. Your website works the same way. The biggest shift happens when the whole site is built from the ground up with the right strategy.</p>
+    <p class="quote">We really approach your website like a client-generating machine, because that's exactly how you're going to get more of the bookings you want.</p>
+    <p class="body">And this is what we do all day, every day, exclusively for photographers. Done-for-you websites with SEO built in, and I love doing it. If you want to explore what it would look like to have it completely handled for you, I'd love to show you.</p>
+    <a class="btn" href="${esc(input.ctaUrl)}">Book Your Free Tour</a>
+    <p class="body" style="text-align:center;margin-top:26px;color:#9db6b5">Maggie &middot; Captured Sites</p>
   </div>
 
   <div class="page dark-bg final">
@@ -181,7 +187,7 @@ export function renderReportHtml(input: {
     <div class="quote">&ldquo;Since launching I booked my highest package ever and now book 1-2 weddings a month consistently!&rdquo;</div>
     <div class="attr">Paige Crumly Photography</div>
     <img class="mockups" src="${MOCKUPS_PNG}" alt="">
-    <a class="btn" href="${esc(input.ctaUrl)}">Watch Now</a>
+    <a class="btn" href="${esc(input.ctaUrl)}">Book Your Free Tour</a>
     <img class="logo" src="${LOGO_PNG}" alt="captured">
   </div>
 
