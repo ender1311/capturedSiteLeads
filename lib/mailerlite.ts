@@ -102,15 +102,28 @@ export async function sendPdfEmail(input: {
       body: JSON.stringify({ delivery: "instant" }),
     });
 
-    // wait for the send so the throwaway group can be removed safely
-    for (let i = 0; i < 18; i++) {
+    // Only remove the throwaway group once the campaign has actually sent —
+    // deleting it earlier strips the queued campaign's recipients and
+    // silently cancels the send. On timeout, leave the group behind.
+    let sent = false;
+    for (let i = 0; i < 24; i++) {
       const res = await ml(`/campaigns/${campaignId}`);
-      if ((await res.json()).data.status === "sent") break;
+      if ((await res.json()).data.status === "sent") {
+        sent = true;
+        break;
+      }
       await new Promise((r) => setTimeout(r, 5000));
     }
-  } finally {
-    await ml(`/groups/${groupId}`, { method: "DELETE" }).catch((err) =>
-      console.warn("Temp delivery group cleanup failed:", err.message)
-    );
+    if (sent) {
+      await ml(`/groups/${groupId}`, { method: "DELETE" }).catch((err) =>
+        console.warn("Temp delivery group cleanup failed:", err.message)
+      );
+    } else {
+      console.warn(`Campaign ${campaignId} not sent after 120s; keeping group ${groupId}`);
+    }
+  } catch (err) {
+    // a failed send should not leave an empty orphan group behind
+    await ml(`/groups/${groupId}`, { method: "DELETE" }).catch(() => {});
+    throw err;
   }
 }
