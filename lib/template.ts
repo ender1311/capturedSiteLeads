@@ -92,9 +92,9 @@ export function renderReportHtml(input: {
   .cover .badge { display: inline-block; margin-top: 240px; background: #a0a93f; color: #143133; font-weight: 700; font-size: 17px; letter-spacing: .05em; padding: 9px 22px; }
   .cover h1 { color: #fff; font-weight: 900; font-size: 76px; line-height: 1.12; margin-top: 26px; }
   .cover .bar { width: 64px; height: 12px; background: #dba927; margin: 34px auto 0; }
-  .cover .prepared { font-family: 'Lora', serif; font-style: italic; color: #fff; font-size: 23px; margin-top: 34px; }
-  .cover .lead-name { color: #fff; font-weight: 900; font-size: 30px; margin-top: 10px; }
-  .cover .lead-site { color: #e6efef; font-size: 16px; margin-top: 10px; text-decoration: underline; }
+  .cover .prepared { font-family: 'Lora', serif; font-style: italic; color: #fff; font-size: 23px; margin-top: 30px; }
+  .cover .lead-name { color: #fff; font-weight: 900; font-size: 46px; margin-top: 12px; }
+  .cover .lead-site { color: #e6efef; font-size: 24px; margin-top: 12px; text-decoration: underline; }
   .cover .cover-byline { color: #cfe0e0; font-size: 13px; margin-top: 26px; }
   .wave { position: absolute; bottom: 0; left: 0; width: 100%; }
   .cover .logo, .final .logo { position: absolute; right: 44px; bottom: 34px; width: 190px; }
