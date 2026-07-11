@@ -14,7 +14,7 @@ export type Lead = {
   email: string;
   site_url: string;
   pdf_url: string | null;
-  status: "complete" | "failed";
+  status: "processing" | "complete" | "failed";
   error: string | null;
   opens: number;
   clicks: number;

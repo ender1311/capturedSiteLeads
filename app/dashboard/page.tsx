@@ -136,7 +136,9 @@ export default async function Dashboard() {
                     className={
                       lead.status === "complete"
                         ? "rounded-full bg-green-100 px-2 py-0.5 text-xs text-green-800"
-                        : "rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-800"
+                        : lead.status === "failed"
+                          ? "rounded-full bg-red-100 px-2 py-0.5 text-xs text-red-800"
+                          : "rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-600"
                     }
                   >
                     {lead.status}
