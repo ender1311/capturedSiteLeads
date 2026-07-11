@@ -2,11 +2,12 @@ import { NextResponse } from "next/server";
 import { auth } from "@/auth";
 
 // Machine-to-machine routes keep their own auth (shared secret / HMAC signature)
-const PUBLIC_PREFIXES = ["/api/auth", "/api/lead", "/api/webhook"];
+const PUBLIC_PREFIXES = ["/api/auth/", "/api/webhook/"];
 
 export default auth((req) => {
   const { pathname } = req.nextUrl;
-  if (PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))) return;
+  // exact match only — /api/leads/* (dashboard CRUD) must stay session-protected
+  if (pathname === "/api/lead" || PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))) return;
 
   if (!req.auth) {
     const signInUrl = new URL("/api/auth/signin", req.nextUrl.origin);

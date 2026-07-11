@@ -1,7 +1,7 @@
 import { generateObject } from "ai";
 import { z } from "zod";
 import { renderReportHtml, type ReportCopy } from "./template";
-import { AGENT_GUIDE } from "./agent-guide";
+import { getLiveGuide } from "./guide-store";
 
 const DEFAULT_MODEL = "google/gemini-2.5-flash-lite";
 
@@ -45,7 +45,7 @@ export async function generateReportHtml(input: {
   scrapedMarkdown: string;
   pain?: string;
 }): Promise<string> {
-  const context = process.env.REDESIGN_CONTEXT?.trim() || AGENT_GUIDE;
+  const context = (await getLiveGuide()).value;
 
   const { object } = await generateObject({
     model: process.env.LLM_MODEL || DEFAULT_MODEL,

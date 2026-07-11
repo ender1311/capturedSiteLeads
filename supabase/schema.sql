@@ -37,3 +37,11 @@ $$;
 
 -- Only the service role (used by the app) may call this — not the public Data API
 revoke execute on function increment_engagement(text, text) from public, anon, authenticated;
+
+-- Runtime-editable app configuration (e.g. the live LLM agent guide)
+create table if not exists app_config (
+  key text primary key,
+  value text not null,
+  updated_at timestamptz not null default now()
+);
+alter table app_config enable row level security;
