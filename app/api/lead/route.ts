@@ -119,5 +119,6 @@ export async function POST(req: NextRequest) {
     }
   });
 
-  return NextResponse.json({ id: lead.id, status: "processing" }, { status: 202 });
+  // 200 (not 202) — Elementor's webhook action treats any non-200 as failure
+  return NextResponse.json({ id: lead.id, status: "processing" });
 }
