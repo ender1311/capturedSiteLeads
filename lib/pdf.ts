@@ -25,10 +25,11 @@ export async function htmlToPdf(html: string): Promise<Buffer> {
   try {
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "load", timeout: 30_000 });
+    await page.evaluateHandle("document.fonts.ready");
     const pdf = await page.pdf({
-      format: "a4",
+      format: "letter",
       printBackground: true,
-      margin: { top: "20mm", bottom: "20mm", left: "16mm", right: "16mm" },
+      margin: { top: 0, bottom: 0, left: 0, right: 0 },
     });
     return Buffer.from(pdf);
   } finally {

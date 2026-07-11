@@ -1,16 +1,49 @@
-import { generateText } from "ai";
+import { generateObject } from "ai";
+import { z } from "zod";
+import { renderReportHtml, type ReportCopy } from "./template";
 
 const DEFAULT_MODEL = "google/gemini-2.5-flash-lite";
 
 const DEFAULT_REDESIGN_CONTEXT = `
-You are writing on behalf of Maggie, a professional web designer who helps small
-businesses modernize their websites. Maggie's redesigns focus on: clear messaging
-above the fold, mobile-first responsive layouts, fast load times, accessible
-typography and color contrast, strong calls-to-action, and SEO fundamentals.
-The report should be encouraging and specific to THIS site — never generic.
-It is a free teaser that demonstrates value and invites the reader to work
-with Maggie for the full redesign.
+You write on behalf of Maggie at Captured Sites, who builds done-for-you,
+SEO-ready websites exclusively for photographers. The "Dream Client Roadmap"
+framework: a converting photographer site answers five visitor questions in
+order — What can you do for me? (hero) / Why should I trust you? (guide) /
+What is it like to work with you? (portfolio) / Have you done this before?
+(testimonials) / How do I get started? (steps). Findings must be specific to
+THIS site — reference its actual content, never generic. Tone: warm, expert,
+encouraging; photography metaphors welcome (e.g. "like editing a RAW photo").
+This is a free teaser that demonstrates value and builds trust.
 `.trim();
+
+const copySchema = z.object({
+  opportunities: z
+    .array(
+      z.object({
+        headline: z
+          .string()
+          .describe(
+            "Punchy opportunity headline, 6-12 words, e.g. \"Your proof is buried, so the price arrives before the trust\""
+          ),
+        noticed: z
+          .string()
+          .describe(
+            "WHAT I NOTICED: 2-3 sentences describing what's actually on their site right now, referencing specific content"
+          ),
+        whyItMatters: z
+          .string()
+          .describe(
+            "WHY IT MATTERS: 2-3 sentences on how this costs them inquiries/bookings from dream clients"
+          ),
+        fixes: z
+          .array(z.string())
+          .length(3)
+          .describe("HOW TO MAKE IT RIGHT: 3 concrete, actionable fixes, one sentence each"),
+      })
+    )
+    .length(3)
+    .describe("Exactly 3 prioritized redesign opportunities"),
+});
 
 export async function generateReportHtml(input: {
   name: string;
@@ -19,29 +52,22 @@ export async function generateReportHtml(input: {
 }): Promise<string> {
   const context = process.env.REDESIGN_CONTEXT?.trim() || DEFAULT_REDESIGN_CONTEXT;
 
-  const { text } = await generateText({
+  const { object } = await generateObject({
     model: process.env.LLM_MODEL || DEFAULT_MODEL,
-    system: `${context}
+    schema: copySchema,
+    system: context,
+    prompt: `Analyze ${input.name}'s website (${input.siteUrl}) against the Dream Client Roadmap framework and produce the 3 highest-impact redesign opportunities.
 
-You produce a complete, self-contained HTML document (inline <style> only, no
-external assets, no JavaScript) styled for print/PDF on A4: clean sans-serif
-typography, generous margins, a title page header, and clearly separated
-sections. Output ONLY the HTML document — no markdown fences, no commentary.`,
-    prompt: `Create a website redesign proposal report for ${input.name}'s website (${input.siteUrl}).
-
-The report must include:
-1. A short personalized intro addressed to ${input.name}.
-2. "What's Working" — 2-3 genuine strengths of the current site.
-3. "Redesign Opportunities" — 4-6 specific, prioritized improvements with the reasoning behind each (reference actual content/structure from the site).
-4. "What a Redesign Could Look Like" — a brief vision of the modernized site.
-5. A closing call-to-action to reply and schedule a free consult with Maggie.
-
-Current site content (scraped):
+Scraped site content:
 ---
 ${input.scrapedMarkdown}
 ---`,
   });
 
-  // Strip accidental markdown fences if the model adds them anyway
-  return text.replace(/^```html?\s*/i, "").replace(/```\s*$/, "").trim();
+  return renderReportHtml({
+    name: input.name,
+    siteUrl: input.siteUrl,
+    copy: object as ReportCopy,
+    ctaUrl: process.env.CTA_URL || "https://capturedsites.com",
+  });
 }
