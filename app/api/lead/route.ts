@@ -29,7 +29,8 @@ function authorized(req: NextRequest): boolean {
 }
 
 // Accepts JSON ({name, email, site_url}) or form-encoded posts from the
-// Elementor webhook action (field custom IDs must be name/email/site_url).
+// Elementor webhook action. Elementor field IDs vary, so extraction is
+// tolerant: exact keys first, then fuzzy key/value matching.
 async function parseBody(req: NextRequest): Promise<unknown> {
   const type = req.headers.get("content-type") ?? "";
   if (type.includes("application/json")) {
@@ -37,9 +38,34 @@ async function parseBody(req: NextRequest): Promise<unknown> {
   }
   const form = await req.formData().catch(() => null);
   if (!form) return null;
-  const pick = (key: string) =>
-    form.get(key) ?? form.get(`form_fields[${key}]`) ?? undefined;
-  return { name: pick("name"), email: pick("email"), site_url: pick("site_url") };
+
+  const fields: Record<string, string> = {};
+  form.forEach((value, key) => {
+    if (typeof value !== "string") return;
+    // unwrap Elementor's advanced-data shape: form_fields[xyz] -> xyz
+    const clean = key.replace(/^form(?:_fields)?\[(.+)\]$/, "$1");
+    fields[clean.toLowerCase()] = value.trim();
+  });
+
+  const byKey = (re: RegExp) =>
+    Object.entries(fields).find(([k, v]) => re.test(k) && v)?.[1];
+  const byValue = (re: RegExp) =>
+    Object.values(fields).find((v) => re.test(v));
+
+  const email =
+    fields["email"] ?? byKey(/e[-_]?mail/) ?? byValue(/^[^\s@]+@[^\s@]+\.[^\s@]+$/);
+  const site_url =
+    fields["site_url"] ??
+    byKey(/url|website|site/) ??
+    Object.values(fields).find(
+      (v) => v !== email && /^(https?:\/\/)?[\w-]+(\.[\w-]+)+/.test(v) && !v.includes("@")
+    );
+  const name = fields["name"] ?? byKey(/name/) ?? undefined;
+
+  if (!email || !site_url || !name) {
+    console.warn("Lead form keys received:", JSON.stringify(Object.keys(fields)));
+  }
+  return { name, email, site_url };
 }
 
 export async function POST(req: NextRequest) {
