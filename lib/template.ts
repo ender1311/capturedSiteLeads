@@ -12,7 +12,12 @@ export type ReportCopy = {
 };
 
 const esc = (s: string) =>
-  s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  s
+    .replace(/\*{1,2}([^*]+)\*{1,2}/g, "$1") // strip markdown emphasis the LLM sneaks in
+    .replace(/`/g, "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 
 const spark = (size: number, color: string, opacity: number) => `
   <svg width="${size}" height="${size}" viewBox="0 0 24 24" style="opacity:${opacity}">

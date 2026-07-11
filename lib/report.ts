@@ -14,6 +14,8 @@ What is it like to work with you? (portfolio) / Have you done this before?
 THIS site — reference its actual content, never generic. Tone: warm, expert,
 encouraging; photography metaphors welcome (e.g. "like editing a RAW photo").
 This is a free teaser that demonstrates value and builds trust.
+Write plain prose only — no markdown, no asterisks, no emphasis markers,
+no quotes around site text.
 `.trim();
 
 const copySchema = z.object({
