@@ -4,7 +4,7 @@ import { scrapeSite } from "@/lib/scrape";
 import { generateReportHtml } from "@/lib/report";
 import { htmlToPdf } from "@/lib/pdf";
 import { storePdf } from "@/lib/storage";
-import { addSubscriber } from "@/lib/mailerlite";
+import { addSubscriber, sendPdfEmail } from "@/lib/mailerlite";
 import { supabaseAdmin } from "@/lib/supabase";
 
 export const maxDuration = 300;
@@ -105,6 +105,7 @@ export async function POST(req: NextRequest) {
       const pdf = await htmlToPdf(reportHtml);
       const pdfUrl = await storePdf(pdf, email);
       await addSubscriber({ name, email, siteUrl: site_url, pdfUrl });
+      await sendPdfEmail({ name, email, pdfUrl });
       await supabase
         .from("leads")
         .update({ pdf_url: pdfUrl, status: "complete" })
