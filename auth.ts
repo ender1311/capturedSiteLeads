@@ -1,7 +1,13 @@
 import NextAuth from "next-auth";
 import Google from "next-auth/providers/google";
 
-const ALLOWED_EMAILS = ["danluk1311@gmail.com", "maggiemluk@gmail.com"];
+const ALLOWED_EMAILS = [
+  "danluk1311@gmail.com",
+  "maggiemluk@gmail.com",
+  "maggiedanluk@gmail.com",
+  "lukfam18@gmail.com",
+  "maggie@capturedsites.com",
+];
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true, // always behind Vercel's proxy (and localhost in dev)
