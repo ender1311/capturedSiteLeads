@@ -7,6 +7,7 @@ import { storePdf } from "@/lib/storage";
 import { addSubscriber } from "@/lib/mailerlite";
 import { sendReportEmail } from "@/lib/email";
 import { supabaseAdmin } from "@/lib/supabase";
+import { checkDailyLimits, normalizeEmail, unsafeUrlReason, visitorIp } from "@/lib/abuse";
 
 export const maxDuration = 300;
 
@@ -33,13 +34,15 @@ function authorized(req: NextRequest): boolean {
 // Accepts JSON ({name, email, site_url}) or form-encoded posts from the
 // Elementor webhook action. Elementor field IDs vary, so extraction is
 // tolerant: exact keys first, then fuzzy key/value matching.
-async function parseBody(req: NextRequest): Promise<unknown> {
+async function parseBody(
+  req: NextRequest
+): Promise<{ body: unknown; rawFields: Record<string, string> }> {
   const type = req.headers.get("content-type") ?? "";
   if (type.includes("application/json")) {
-    return req.json().catch(() => null);
+    return { body: await req.json().catch(() => null), rawFields: {} };
   }
   const form = await req.formData().catch(() => null);
-  if (!form) return null;
+  if (!form) return { body: null, rawFields: {} };
 
   const fields: Record<string, string> = {};
   form.forEach((value, key) => {
@@ -68,7 +71,7 @@ async function parseBody(req: NextRequest): Promise<unknown> {
   if (!email || !site_url || !name) {
     console.warn("Lead form keys received:", JSON.stringify(Object.keys(fields)));
   }
-  return { name, email, site_url, pain };
+  return { body: { name, email, site_url, pain }, rawFields: fields };
 }
 
 export async function POST(req: NextRequest) {
@@ -76,23 +79,45 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const parsed = leadSchema.safeParse(await parseBody(req));
+  const { body, rawFields } = await parseBody(req);
+  const parsed = leadSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
       { error: "Invalid payload", details: parsed.error.flatten().fieldErrors },
       { status: 400 }
     );
   }
-  const { name, email, site_url, pain } = parsed.data;
-  const supabase = supabaseAdmin();
+  const { name, site_url, pain } = parsed.data;
+  const email = normalizeEmail(parsed.data.email);
+  const ip = visitorIp(req, rawFields);
 
+  const urlProblem = unsafeUrlReason(site_url);
+  if (urlProblem) {
+    return NextResponse.json({ error: `Rejected URL: ${urlProblem}` }, { status: 400 });
+  }
+
+  const supabase = supabaseAdmin();
   const { data: lead, error: insertError } = await supabase
     .from("leads")
-    .insert({ name, email, site_url, status: "processing" })
+    .insert({ name, email, site_url, ip, status: "processing" })
     .select("id")
     .single();
   if (insertError) {
     return NextResponse.json({ error: insertError.message }, { status: 500 });
+  }
+
+  // Rate limits are counted AFTER inserting this attempt, so rejected and
+  // failed attempts also consume the allowance (no free retries for abusers).
+  const limit = await checkDailyLimits({ email, ip }).catch((err) => {
+    console.error(err.message);
+    return { allowed: true as const }; // fail open: a limiter outage shouldn't drop real leads
+  });
+  if (!limit.allowed) {
+    await supabase
+      .from("leads")
+      .update({ status: "rejected", error: limit.reason })
+      .eq("id", lead.id);
+    return NextResponse.json({ error: limit.reason }, { status: 429 });
   }
 
   // Respond immediately (Elementor webhooks time out quickly); the

@@ -32,7 +32,12 @@ https://captured-site-leads.vercel.app/api/lead?secret=SECRET_GOES_HERE
 
 Replace `SECRET_GOES_HERE` with the value provided separately (it is the `LEAD_WEBHOOK_SECRET`). Do not publish this URL anywhere visitor-facing — it lives only in the Elementor admin settings.
 
-- Leave **Advanced Data** OFF (the endpoint accepts either, but plain data is cleaner).
+- Turn **Advanced Data** ON — this forwards the visitor's IP address (`meta[remote_ip]`), which the backend needs for its per-visitor rate limiting (3 PDFs per IP per day). Without it, only per-email limits apply.
+
+### 2b. Bot protection on the form
+
+- In the form widget, add a **Honeypot** field (Elementor Pro has a built-in Honeypot field type) — invisible to humans, filters most dumb bots for free.
+- Optionally add **reCAPTCHA v3** or **Cloudflare Turnstile** (Elementor → Settings → Integrations) for stronger protection. Not required to launch — the backend also enforces per-IP/per-email limits (3/day each) and a global daily cap.
 
 ### 3. Remove any duplicate email actions
 

@@ -6,8 +6,9 @@ create table if not exists leads (
   email text not null,
   site_url text not null,
   pdf_url text,
-  status text not null default 'complete', -- complete | failed
+  status text not null default 'complete', -- processing | complete | failed | rejected
   error text,
+  ip text,
   opens int not null default 0,
   clicks int not null default 0,
   created_at timestamptz not null default now()
