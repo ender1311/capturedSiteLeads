@@ -132,7 +132,7 @@ export async function POST(req: NextRequest) {
         pain,
       });
       const pdf = await htmlToPdf(reportHtml);
-      const pdfUrl = await storePdf(pdf, email);
+      const pdfUrl = await storePdf(pdf, { name });
       await addSubscriber({ name, email, siteUrl: site_url, pdfUrl });
       await sendReportEmail({ name, email, pdfUrl, pdf });
       await supabase

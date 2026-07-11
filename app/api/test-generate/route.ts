@@ -50,7 +50,7 @@ export async function POST(req: NextRequest) {
       pain,
     });
     const pdf = await htmlToPdf(reportHtml);
-    const pdfUrl = await storePdf(pdf, `test-${session.user.email ?? "tester"}`);
+    const pdfUrl = await storePdf(pdf, { name, folder: "test-reports" });
     return NextResponse.json({ pdf_url: pdfUrl });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

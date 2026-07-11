@@ -1,4 +1,5 @@
 import { sendPdfEmail } from "./mailerlite";
+import { pdfFilename } from "./storage";
 
 // Above this size, skip the attachment and rely on the link — large
 // attachments get clipped or rejected by email clients.
@@ -42,7 +43,7 @@ async function sendViaResend(input: {
       subject: `${input.name}, your Dream Client Roadmap is ready 📸`,
       html: deliveryEmailHtml(input.name, input.pdfUrl, attach),
       attachments: attach
-        ? [{ filename: "Dream-Client-Roadmap.pdf", content: input.pdf.toString("base64") }]
+        ? [{ filename: pdfFilename(input.name), content: input.pdf.toString("base64") }]
         : undefined,
     }),
   });

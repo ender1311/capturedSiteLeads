@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Lead } from "@/lib/supabase";
 
@@ -10,6 +10,18 @@ const STATUS_STYLES: Record<string, string> = {
   rejected: "bg-amber-100 text-amber-800",
   processing: "bg-zinc-100 text-zinc-600",
 };
+
+type SortKey = "name" | "email" | "site_url" | "pdf_url" | "status" | "opens" | "clicks" | "created_at";
+
+const COLUMNS: { key: SortKey; label: string; numeric?: boolean }[] = [
+  { key: "name", label: "Lead" },
+  { key: "site_url", label: "Site" },
+  { key: "pdf_url", label: "Report" },
+  { key: "status", label: "Status" },
+  { key: "opens", label: "Opens", numeric: true },
+  { key: "clicks", label: "Clicks", numeric: true },
+  { key: "created_at", label: "Created" },
+];
 
 function timeAgo(iso: string): string {
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -24,6 +36,39 @@ export function LeadsTable({ initialLeads }: { initialLeads: Lead[] }) {
   const [leads, setLeads] = useState(initialLeads);
   const [deleting, setDeleting] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [sortKey, setSortKey] = useState<SortKey>("created_at");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let rows = leads;
+    if (statusFilter !== "all") rows = rows.filter((l) => l.status === statusFilter);
+    if (q) {
+      rows = rows.filter((l) =>
+        [l.name, l.email, l.site_url, l.error ?? "", l.ip ?? ""].some((v) =>
+          v.toLowerCase().includes(q)
+        )
+      );
+    }
+    const dir = sortDir === "asc" ? 1 : -1;
+    return [...rows].sort((a, b) => {
+      const av = a[sortKey] ?? "";
+      const bv = b[sortKey] ?? "";
+      if (typeof av === "number" && typeof bv === "number") return (av - bv) * dir;
+      return String(av).localeCompare(String(bv)) * dir;
+    });
+  }, [leads, query, statusFilter, sortKey, sortDir]);
+
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir(key === "created_at" || key === "opens" || key === "clicks" ? "desc" : "asc");
+    }
+  }
 
   async function handleDelete(lead: Lead) {
     if (!confirm(`Delete lead "${lead.name}" (${lead.email})? This cannot be undone.`)) return;
@@ -42,11 +87,28 @@ export function LeadsTable({ initialLeads }: { initialLeads: Lead[] }) {
 
   return (
     <div className="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
-      <div className="flex items-center justify-between border-b border-zinc-100 px-4 py-3 dark:border-zinc-800">
+      <div className="flex flex-wrap items-center gap-2 border-b border-zinc-100 px-4 py-3 dark:border-zinc-800">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search name, email, site…"
+          className="w-64 rounded-lg border border-zinc-300 px-3 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+        />
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="rounded-lg border border-zinc-300 px-2 py-1.5 text-sm dark:border-zinc-700 dark:bg-zinc-800"
+        >
+          <option value="all">All statuses</option>
+          <option value="complete">Complete</option>
+          <option value="processing">Processing</option>
+          <option value="failed">Failed</option>
+          <option value="rejected">Rejected</option>
+        </select>
         <span className="text-sm text-zinc-500">
-          {leads.length} lead{leads.length === 1 ? "" : "s"}
+          {visible.length} of {leads.length}
         </span>
-        <div className="flex gap-2">
+        <div className="ml-auto flex gap-2">
           <button
             onClick={() => router.refresh()}
             className="rounded-lg border border-zinc-300 px-3 py-1.5 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800"
@@ -70,25 +132,33 @@ export function LeadsTable({ initialLeads }: { initialLeads: Lead[] }) {
         <table className="w-full text-left text-sm">
           <thead className="text-zinc-500">
             <tr className="border-b border-zinc-100 dark:border-zinc-800">
-              <th className="px-4 py-3 font-medium">Lead</th>
-              <th className="px-4 py-3 font-medium">Site</th>
-              <th className="px-4 py-3 font-medium">Report</th>
-              <th className="px-4 py-3 font-medium">Status</th>
-              <th className="px-4 py-3 text-right font-medium">Opens</th>
-              <th className="px-4 py-3 text-right font-medium">Clicks</th>
-              <th className="px-4 py-3 font-medium">Created</th>
+              {COLUMNS.map((col) => (
+                <th key={col.key} className={`px-4 py-3 font-medium ${col.numeric ? "text-right" : ""}`}>
+                  <button
+                    onClick={() => toggleSort(col.key)}
+                    className="inline-flex items-center gap-1 hover:text-zinc-800 dark:hover:text-zinc-200"
+                  >
+                    {col.label}
+                    <span className="text-xs">
+                      {sortKey === col.key ? (sortDir === "asc" ? "▲" : "▼") : ""}
+                    </span>
+                  </button>
+                </th>
+              ))}
               <th className="px-4 py-3"></th>
             </tr>
           </thead>
           <tbody>
-            {leads.length === 0 && (
+            {visible.length === 0 && (
               <tr>
                 <td colSpan={8} className="px-4 py-12 text-center text-zinc-500">
-                  No leads yet — submissions from the Free Audit form will appear here.
+                  {leads.length === 0
+                    ? "No leads yet — submissions from the Free Audit form will appear here."
+                    : "No leads match the current search/filter."}
                 </td>
               </tr>
             )}
-            {leads.map((lead) => (
+            {visible.map((lead) => (
               <tr
                 key={lead.id}
                 className="group border-b border-zinc-50 last:border-0 hover:bg-zinc-50 dark:border-zinc-800/50 dark:hover:bg-zinc-800/40"
