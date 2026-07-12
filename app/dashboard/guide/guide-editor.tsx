@@ -246,6 +246,9 @@ export function GuideEditor() {
         <div className="mt-4 grid gap-2 sm:grid-cols-2">
           {MODEL_OPTIONS.map((m) => {
             const per = costPerReport(m);
+            const cents = per * 100;
+            const centsLabel = cents < 1 ? `${cents.toFixed(1)}¢` : `${cents.toFixed(0)}¢`;
+            const per1000 = Math.round(per * 1000);
             const active = model === m.id;
             return (
               <button
@@ -263,8 +266,13 @@ export function GuideEditor() {
                   {active && <span className="text-xs font-bold text-[#337a80]">ACTIVE</span>}
                 </div>
                 <div className="mt-1 text-xs text-zinc-500">{m.description}</div>
-                <div className="mt-2 text-xs font-medium text-zinc-700 dark:text-zinc-300">
-                  ~${per < 0.01 ? per.toFixed(4) : per.toFixed(3)}/PDF · ~${Math.round(per * 1000)}/1,000 leads
+                <div className="mt-2 flex gap-2">
+                  <span className="rounded-md bg-zinc-100 px-2 py-1 text-xs font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                    {centsLabel} per PDF
+                  </span>
+                  <span className="rounded-md bg-zinc-100 px-2 py-1 text-xs font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+                    ${per1000} per 1,000 leads
+                  </span>
                 </div>
               </button>
             );
