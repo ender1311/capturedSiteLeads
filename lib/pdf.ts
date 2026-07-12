@@ -20,7 +20,7 @@ async function getBrowser() {
   });
 }
 
-export async function htmlToPdf(html: string): Promise<Buffer> {
+async function renderOnce(html: string): Promise<Buffer> {
   const browser = await getBrowser();
   try {
     const page = await browser.newPage();
@@ -35,4 +35,19 @@ export async function htmlToPdf(html: string): Promise<Buffer> {
   } finally {
     await browser.close();
   }
+}
+
+// Fluid Compute reuses a warm instance across concurrent requests, so two
+// PDF renders can race to extract the @sparticuz/chromium binary into /tmp
+// and fail with ETXTBSY. Serialize renders per instance — volume is tiny, so
+// the queueing cost is irrelevant.
+let renderChain: Promise<unknown> = Promise.resolve();
+
+export function htmlToPdf(html: string): Promise<Buffer> {
+  const run = renderChain.then(
+    () => renderOnce(html),
+    () => renderOnce(html)
+  );
+  renderChain = run.catch(() => {});
+  return run;
 }

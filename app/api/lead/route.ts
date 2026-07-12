@@ -44,12 +44,39 @@ async function parseBody(
   const form = await req.formData().catch(() => null);
   if (!form) return { body: null, rawFields: {} };
 
+  // Elementor sends different shapes depending on "Advanced Data":
+  //   off -> name=Dan                              (flat)
+  //   on  -> fields[email][value]=…  fields[email][id]=…  fields[field_abc][value]=…
+  //          form[name]="New Form"  meta[remote_ip]=…
+  // Normalize all of them into one flat map keyed by field id. The `[value]`
+  // sub-key is authoritative; `[id]/[type]/[title]` metadata is dropped; the
+  // `form[...]` namespace (form-level metadata) is ignored so "New Form"
+  // can't pollute the lead's name.
   const fields: Record<string, string> = {};
-  form.forEach((value, key) => {
-    if (typeof value !== "string") return;
-    // unwrap Elementor's advanced-data shape: form_fields[xyz] -> xyz
-    const clean = key.replace(/^form(?:_fields)?\[(.+)\]$/, "$1");
-    fields[clean.toLowerCase()] = value.trim();
+  form.forEach((rawValue, key) => {
+    if (typeof rawValue !== "string") return;
+    const value = rawValue.trim();
+    if (!value) return;
+
+    const parts = [...key.matchAll(/([^[\]]+)/g)].map((m) => m[1]);
+    const ns = parts[0];
+    if (ns === "form") return;
+
+    let fieldId: string | undefined;
+    let sub: string | undefined;
+    if (ns === "fields" || ns === "form_fields" || ns === "meta") {
+      fieldId = parts[1];
+      sub = parts[2];
+    } else {
+      fieldId = ns;
+      sub = parts[1];
+    }
+    if (!fieldId) return;
+    if (sub && sub !== "value") return; // skip [id], [type], [title], etc.
+
+    const k = fieldId.toLowerCase();
+    // a [value] sub-key always wins; otherwise first non-empty value sticks
+    if (sub === "value" || fields[k] === undefined) fields[k] = value;
   });
 
   const byKey = (re: RegExp) =>
