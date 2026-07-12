@@ -136,14 +136,17 @@ export function LeadsTable({ initialLeads }: { initialLeads: Lead[] }) {
           <thead className="text-zinc-500">
             <tr className="border-b border-zinc-100 dark:border-zinc-800">
               {COLUMNS.map((col) => (
-                <th key={col.key} className={`px-4 py-3 font-medium ${col.numeric ? "text-right" : ""}`}>
+                <th key={col.key} className={`px-2 py-2 font-medium ${col.numeric ? "text-right" : ""}`}>
                   <button
                     onClick={() => toggleSort(col.key)}
-                    className="inline-flex items-center gap-1 hover:text-zinc-800 dark:hover:text-zinc-200"
+                    title={`Sort by ${col.label}`}
+                    className={`inline-flex cursor-pointer select-none items-center gap-1 rounded-md px-2 py-1 transition hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-800 dark:hover:text-zinc-100 ${
+                      sortKey === col.key ? "font-semibold text-[#1a4245] dark:text-teal-200" : ""
+                    }`}
                   >
                     {col.label}
-                    <span className="text-xs">
-                      {sortKey === col.key ? (sortDir === "asc" ? "▲" : "▼") : ""}
+                    <span className={`text-[10px] ${sortKey === col.key ? "text-[#337a80]" : "text-zinc-300 dark:text-zinc-600"}`}>
+                      {sortKey === col.key ? (sortDir === "asc" ? "▲" : "▼") : "↕"}
                     </span>
                   </button>
                 </th>
