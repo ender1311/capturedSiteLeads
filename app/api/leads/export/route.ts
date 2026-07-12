@@ -15,14 +15,14 @@ export async function GET() {
 
   const { data, error } = await supabaseAdmin()
     .from("leads")
-    .select("name, email, site_url, status, pdf_url, opens, clicks, ip, error, created_at")
+    .select("name, email, site_url, status, pdf_url, model, opens, clicks, ip, error, created_at")
     .order("created_at", { ascending: false })
     .limit(10_000);
   if (error) {
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  const header = ["name", "email", "site_url", "status", "pdf_url", "opens", "clicks", "ip", "error", "created_at"];
+  const header = ["name", "email", "site_url", "status", "pdf_url", "model", "opens", "clicks", "ip", "error", "created_at"];
   const rows = (data ?? []).map((l) => header.map((k) => csvCell((l as Record<string, unknown>)[k])).join(","));
   const csv = [header.join(","), ...rows].join("\n");
 

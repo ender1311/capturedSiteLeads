@@ -11,17 +11,20 @@ const STATUS_STYLES: Record<string, string> = {
   processing: "bg-zinc-100 text-zinc-600",
 };
 
-type SortKey = "name" | "email" | "site_url" | "pdf_url" | "status" | "opens" | "clicks" | "created_at";
+type SortKey = "name" | "email" | "site_url" | "pdf_url" | "status" | "model" | "opens" | "clicks" | "created_at";
 
 const COLUMNS: { key: SortKey; label: string; numeric?: boolean }[] = [
   { key: "name", label: "Lead" },
   { key: "site_url", label: "Site" },
   { key: "pdf_url", label: "Report" },
   { key: "status", label: "Status" },
+  { key: "model", label: "Model" },
   { key: "opens", label: "Opens", numeric: true },
   { key: "clicks", label: "Clicks", numeric: true },
   { key: "created_at", label: "Created" },
 ];
+
+const shortModel = (m: string | null) => (m ? m.split("/").pop() : null);
 
 function timeAgo(iso: string): string {
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -47,7 +50,7 @@ export function LeadsTable({ initialLeads }: { initialLeads: Lead[] }) {
     if (statusFilter !== "all") rows = rows.filter((l) => l.status === statusFilter);
     if (q) {
       rows = rows.filter((l) =>
-        [l.name, l.email, l.site_url, l.error ?? "", l.ip ?? ""].some((v) =>
+        [l.name, l.email, l.site_url, l.error ?? "", l.ip ?? "", l.model ?? ""].some((v) =>
           v.toLowerCase().includes(q)
         )
       );
@@ -151,7 +154,7 @@ export function LeadsTable({ initialLeads }: { initialLeads: Lead[] }) {
           <tbody>
             {visible.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-4 py-12 text-center text-zinc-500">
+                <td colSpan={9} className="px-4 py-12 text-center text-zinc-500">
                   {leads.length === 0
                     ? "No leads yet — submissions from the Free Audit form will appear here."
                     : "No leads match the current search/filter."}
@@ -198,6 +201,15 @@ export function LeadsTable({ initialLeads }: { initialLeads: Lead[] }) {
                   >
                     {lead.status}
                   </span>
+                </td>
+                <td className="px-4 py-3">
+                  {lead.model ? (
+                    <span className="text-xs text-zinc-500" title={lead.model}>
+                      {shortModel(lead.model)}
+                    </span>
+                  ) : (
+                    <span className="text-zinc-400">–</span>
+                  )}
                 </td>
                 <td className="px-4 py-3 text-right tabular-nums">{lead.opens}</td>
                 <td className="px-4 py-3 text-right tabular-nums">{lead.clicks}</td>

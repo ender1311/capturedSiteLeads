@@ -29,3 +29,21 @@ export async function resetGuide(): Promise<void> {
   const { error } = await supabaseAdmin().from("app_config").delete().eq("key", KEY);
   if (error) throw new Error(`Guide reset failed: ${error.message}`);
 }
+
+const MODEL_KEY = "llm_model";
+
+export async function getLiveModel(): Promise<string | null> {
+  const { data } = await supabaseAdmin()
+    .from("app_config")
+    .select("value")
+    .eq("key", MODEL_KEY)
+    .maybeSingle();
+  return data?.value?.trim() || null;
+}
+
+export async function saveModel(model: string): Promise<void> {
+  const { error } = await supabaseAdmin()
+    .from("app_config")
+    .upsert({ key: MODEL_KEY, value: model, updated_at: new Date().toISOString() });
+  if (error) throw new Error(`Model save failed: ${error.message}`);
+}

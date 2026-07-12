@@ -17,6 +17,7 @@ export type Lead = {
   status: "processing" | "complete" | "failed" | "rejected";
   error: string | null;
   ip: string | null;
+  model: string | null;
   opens: number;
   clicks: number;
   created_at: string;

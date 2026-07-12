@@ -9,6 +9,7 @@ create table if not exists leads (
   status text not null default 'complete', -- processing | complete | failed | rejected
   error text,
   ip text,
+  model text,
   opens int not null default 0,
   clicks int not null default 0,
   created_at timestamptz not null default now()

@@ -125,7 +125,7 @@ export async function POST(req: NextRequest) {
   after(async () => {
     try {
       const scraped = await scrapeSite(site_url);
-      const reportHtml = await generateReportHtml({
+      const { html: reportHtml, model } = await generateReportHtml({
         name,
         siteUrl: site_url,
         scrapedMarkdown: scraped,
@@ -137,7 +137,7 @@ export async function POST(req: NextRequest) {
       await sendReportEmail({ name, email, pdfUrl, pdf });
       await supabase
         .from("leads")
-        .update({ pdf_url: pdfUrl, status: "complete" })
+        .update({ pdf_url: pdfUrl, status: "complete", model })
         .eq("id", lead.id);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

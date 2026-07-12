@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MODEL_OPTIONS, costPerReport } from "@/lib/models";
 
 type GuideState = {
   value: string;
@@ -27,7 +28,11 @@ export function GuideEditor() {
   const [testUrl, setTestUrl] = useState("");
   const [testPain, setTestPain] = useState("");
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ pdf_url?: string; error?: string } | null>(null);
+  const [testResult, setTestResult] = useState<{ pdf_url?: string; model?: string; error?: string } | null>(null);
+
+  const [model, setModel] = useState<string | null>(null);
+  const [savingModel, setSavingModel] = useState(false);
+  const [modelStatus, setModelStatus] = useState<string | null>(null);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -39,7 +44,32 @@ export function GuideEditor() {
         setDraft(g.value);
       })
       .catch(() => setStatus({ kind: "err", text: "Failed to load the guide." }));
+    fetch("/api/model")
+      .then((r) => r.json())
+      .then((m: { current: string }) => setModel(m.current))
+      .catch(() => setModel(null));
   }, []);
+
+  async function switchModel(id: string) {
+    const prev = model;
+    setModel(id);
+    setSavingModel(true);
+    setModelStatus(null);
+    try {
+      const res = await fetch("/api/model", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: id }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error ?? `HTTP ${res.status}`);
+      setModelStatus("Saved — the next PDF uses this model.");
+    } catch (err) {
+      setModel(prev);
+      setModelStatus(`Failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setSavingModel(false);
+    }
+  }
 
   const headings = useMemo(() => parseHeadings(draft), [draft]);
   const dirty = guide !== null && draft !== guide.value;
@@ -111,7 +141,7 @@ export function GuideEditor() {
       });
       const body = await res.json();
       if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
-      setTestResult({ pdf_url: body.pdf_url });
+      setTestResult({ pdf_url: body.pdf_url, model: body.model });
     } catch (err) {
       setTestResult({ error: err instanceof Error ? err.message : String(err) });
     } finally {
@@ -202,6 +232,48 @@ export function GuideEditor() {
         </div>
       </div>
 
+      {/* Model picker */}
+      <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+        <h2 className="font-semibold text-zinc-900 dark:text-zinc-50">Copywriting model</h2>
+        <p className="mt-1 text-sm text-zinc-500">
+          Which AI writes the roadmaps. Applies immediately to all new PDFs (form leads and tests).
+          Cost estimates use the measured ~5.5K in / 1K out tokens per report.
+        </p>
+        {modelStatus && <p className="mt-2 text-sm text-[#337a80]">{modelStatus}</p>}
+        <div className="mt-4 grid gap-2 sm:grid-cols-2">
+          {MODEL_OPTIONS.map((m) => {
+            const per = costPerReport(m);
+            const active = model === m.id;
+            return (
+              <button
+                key={m.id}
+                onClick={() => switchModel(m.id)}
+                disabled={savingModel}
+                className={`rounded-xl border p-3 text-left transition ${
+                  active
+                    ? "border-[#337a80] bg-[#337a80]/5 ring-1 ring-[#337a80]"
+                    : "border-zinc-200 hover:border-zinc-300 dark:border-zinc-700"
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-semibold text-zinc-900 dark:text-zinc-100">{m.label}</span>
+                  {active && <span className="text-xs font-bold text-[#337a80]">ACTIVE</span>}
+                </div>
+                <div className="mt-1 text-xs text-zinc-500">{m.description}</div>
+                <div className="mt-2 text-xs font-medium text-zinc-700 dark:text-zinc-300">
+                  ~${per < 0.01 ? per.toFixed(4) : per.toFixed(3)}/PDF · ~${Math.round(per * 1000)}/1,000 leads
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        {model && !MODEL_OPTIONS.some((m) => m.id === model) && (
+          <p className="mt-3 text-xs text-zinc-500">
+            Currently using a custom model: <code>{model}</code>
+          </p>
+        )}
+      </div>
+
       {/* Test generation */}
       <div className="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
         <h2 className="font-semibold text-zinc-900 dark:text-zinc-50">Test a generation</h2>
@@ -249,6 +321,9 @@ export function GuideEditor() {
             >
               Open the test PDF →
             </a>
+            {testResult.model && (
+              <span className="ml-2 text-xs text-zinc-500">written by {testResult.model}</span>
+            )}
           </p>
         )}
         {testResult?.error && (

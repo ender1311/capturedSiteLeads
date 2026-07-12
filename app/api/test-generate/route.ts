@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const scraped = await scrapeSite(site_url);
-    const reportHtml = await generateReportHtml({
+    const { html: reportHtml, model } = await generateReportHtml({
       name,
       siteUrl: site_url,
       scrapedMarkdown: scraped,
@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
     });
     const pdf = await htmlToPdf(reportHtml);
     const pdfUrl = await storePdf(pdf, { name, folder: "test-reports" });
-    return NextResponse.json({ pdf_url: pdfUrl });
+    return NextResponse.json({ pdf_url: pdfUrl, model });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return NextResponse.json({ error: message }, { status: 500 });

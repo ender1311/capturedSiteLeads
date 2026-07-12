@@ -1,9 +1,8 @@
 import { generateObject } from "ai";
 import { z } from "zod";
 import { renderReportHtml, type ReportCopy } from "./template";
-import { getLiveGuide } from "./guide-store";
-
-const DEFAULT_MODEL = "google/gemini-2.5-flash-lite";
+import { getLiveGuide, getLiveModel } from "./guide-store";
+import { DEFAULT_MODEL } from "./models";
 
 const copySchema = z.object({
   opportunities: z
@@ -44,11 +43,12 @@ export async function generateReportHtml(input: {
   siteUrl: string;
   scrapedMarkdown: string;
   pain?: string;
-}): Promise<string> {
+}): Promise<{ html: string; model: string }> {
   const context = (await getLiveGuide()).value;
+  const model = (await getLiveModel()) || process.env.LLM_MODEL || DEFAULT_MODEL;
 
   const { object } = await generateObject({
-    model: process.env.LLM_MODEL || DEFAULT_MODEL,
+    model,
     schema: copySchema,
     system: context,
     prompt: `Photographer: ${input.name}
@@ -63,10 +63,11 @@ ${input.scrapedMarkdown}
 ---`,
   });
 
-  return renderReportHtml({
+  const html = renderReportHtml({
     name: input.name,
     siteUrl: input.siteUrl,
     copy: object as ReportCopy,
     ctaUrl: process.env.CTA_URL || "https://capturedsites.com/tour/",
   });
+  return { html, model };
 }
