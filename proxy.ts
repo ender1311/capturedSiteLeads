@@ -17,5 +17,9 @@ export default auth((req) => {
 });
 
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.svg$).*)"],
+  // Exclude Next internals plus the PWA public assets (manifest, service
+  // worker, icons) so they load without an auth redirect.
+  matcher: [
+    "/((?!_next/static|_next/image|favicon.ico|manifest.webmanifest|sw.js|.*\\.(?:svg|png|ico|webmanifest)$).*)",
+  ],
 };
