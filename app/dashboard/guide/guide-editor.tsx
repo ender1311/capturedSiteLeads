@@ -74,6 +74,8 @@ export function GuideEditor() {
   const headings = useMemo(() => parseHeadings(draft), [draft]);
   const dirty = guide !== null && draft !== guide.value;
   const tokens = Math.round(draft.length / 3.7);
+  const activeModel = MODEL_OPTIONS.find((m) => m.id === model) ?? MODEL_OPTIONS[0];
+  const guideCostPer1000 = tokens * activeModel.inputPerToken * 1000;
 
   const jumpTo = useCallback(
     (line: number) => {
@@ -167,7 +169,8 @@ export function GuideEditor() {
               </span>
             )}
             <span className="mx-2">·</span>
-            ~{tokens.toLocaleString()} tokens (≈ ${((tokens * 0.1) / 1_000_000).toFixed(4)}/report)
+            ~{tokens.toLocaleString()} tokens · guide adds ≈ $
+            {guideCostPer1000 < 10 ? guideCostPer1000.toFixed(2) : Math.round(guideCostPer1000)} per 1,000 reports
             {dirty && <span className="ml-2 font-semibold text-amber-600">Unsaved changes</span>}
           </div>
           <div className="flex gap-2">
