@@ -1,6 +1,6 @@
 // Minimal service worker — satisfies PWA installability and caches the app
 // shell/icons. Auth-gated data is always fetched fresh from the network.
-const CACHE = "captured-shell-v1";
+const CACHE = "captured-shell-v2";
 const SHELL = ["/dashboard", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
