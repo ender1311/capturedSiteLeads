@@ -27,7 +27,7 @@ const PROVIDERS: {
     points: [
       "Sent instantly from maggie@capturedsites.com (authenticated domain) — strongest inbox placement",
       "The roadmap PDF is attached to the email, plus the View button",
-      "Opens/clicks of the delivery email are NOT tracked in the dashboard (webhook is MailerLite-only)",
+      "Opens and clicks feed the dashboard stats via the Resend webhook",
       "Falls back to MailerLite automatically if Resend ever fails",
     ],
   },
