@@ -6,17 +6,14 @@ import { generateReportHtml } from "@/lib/report";
 import { htmlToPdf } from "@/lib/pdf";
 import { storePdf } from "@/lib/storage";
 import { unsafeUrlReason } from "@/lib/abuse";
+import { leadName, leadPain, leadSiteUrl } from "@/lib/lead-fields";
 
 export const maxDuration = 300;
 
 const testSchema = z.object({
-  name: z.string().min(1).max(200),
-  site_url: z
-    .string()
-    .min(4)
-    .transform((u) => (/^https?:\/\//i.test(u) ? u : `https://${u}`))
-    .pipe(z.string().url()),
-  pain: z.string().max(500).optional(),
+  name: leadName,
+  site_url: leadSiteUrl,
+  pain: leadPain,
 });
 
 // Runs scrape → LLM (current live guide) → PDF and returns the PDF URL.

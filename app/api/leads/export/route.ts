@@ -3,7 +3,10 @@ import { auth } from "@/auth";
 import { supabaseAdmin } from "@/lib/supabase";
 
 const csvCell = (v: unknown): string => {
-  const s = v == null ? "" : String(v);
+  let s = v == null ? "" : String(v);
+  // Neutralize spreadsheet formula injection: lead names/URLs are
+  // attacker-supplied and this file gets opened in Excel/Sheets.
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 

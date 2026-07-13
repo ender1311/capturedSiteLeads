@@ -9,12 +9,16 @@ const ALLOWED_EMAILS = [
   "maggie@capturedsites.com",
 ];
 
+export function isAllowedEmail(email: string | null | undefined): boolean {
+  return ALLOWED_EMAILS.includes(email?.toLowerCase() ?? "");
+}
+
 export const { handlers, auth, signIn, signOut } = NextAuth({
   trustHost: true, // always behind Vercel's proxy (and localhost in dev)
   providers: [Google],
   callbacks: {
     signIn({ user }) {
-      return ALLOWED_EMAILS.includes(user.email?.toLowerCase() ?? "");
+      return isAllowedEmail(user.email);
     },
   },
 });

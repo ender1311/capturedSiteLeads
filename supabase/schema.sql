@@ -6,7 +6,7 @@ create table if not exists leads (
   email text not null,
   site_url text not null,
   pdf_url text,
-  status text not null default 'complete', -- processing | complete | failed | rejected
+  status text not null default 'processing', -- processing | complete | failed | rejected
   error text,
   ip text,
   model text,
@@ -15,23 +15,41 @@ create table if not exists leads (
   created_at timestamptz not null default now()
 );
 
+-- Idempotent upgrade for databases created before the default changed:
+-- a bare insert must not masquerade as a delivered report.
+alter table leads alter column status set default 'processing';
+
 create index if not exists leads_email_idx on leads (email);
 create index if not exists leads_created_at_idx on leads (created_at desc);
 
 -- Lock the table down; the app uses the service-role key which bypasses RLS.
 alter table leads enable row level security;
 
--- Atomically bump opens/clicks for a lead by email (used by the MailerLite webhook)
+-- Atomically bump opens/clicks for a lead by email (used by the MailerLite
+-- webhook). Only the most recent DELIVERED lead is credited — the same person
+-- may have older/failed/rejected rows, and inflating them all skews the
+-- dashboard's open/click rates.
 create or replace function increment_engagement(lead_email text, counter text)
 returns void
 language plpgsql
 security invoker
 as $$
+declare
+  target uuid;
 begin
+  select id into target
+  from leads
+  where email = lead_email and status = 'complete'
+  order by created_at desc
+  limit 1;
+  if target is null then
+    return;
+  end if;
+
   if counter = 'opens' then
-    update leads set opens = opens + 1 where email = lead_email;
+    update leads set opens = opens + 1 where id = target;
   elsif counter = 'clicks' then
-    update leads set clicks = clicks + 1 where email = lead_email;
+    update leads set clicks = clicks + 1 where id = target;
   end if;
 end;
 $$;

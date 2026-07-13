@@ -23,9 +23,9 @@ export default async function Dashboard() {
     );
   }
 
-  const { data, error } = await supabaseAdmin()
+  const { data, error, count } = await supabaseAdmin()
     .from("leads")
-    .select("*")
+    .select("*", { count: "exact" })
     .order("created_at", { ascending: false })
     .limit(500);
 
@@ -34,6 +34,7 @@ export default async function Dashboard() {
   }
 
   const leads = (data ?? []) as Lead[];
+  const totalLeads = count ?? leads.length;
   const delivered = leads.filter((l) => l.status === "complete");
   const opened = delivered.filter((l) => l.opens > 0).length;
   const clicked = delivered.filter((l) => l.clicks > 0).length;
@@ -53,7 +54,7 @@ export default async function Dashboard() {
       </div>
 
       <div className="mt-6 grid grid-cols-2 gap-4 md:grid-cols-4">
-        <Stat label="Total leads" value={leads.length} />
+        <Stat label="Total leads" value={totalLeads} />
         <Stat label="Open rate" value={pct(opened)} hint="of delivered reports" />
         <Stat label="Click rate" value={pct(clicked)} hint="of delivered reports" />
         <Stat label="Failed / rejected" value={problems} />

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/auth";
+import { auth, isAllowedEmail } from "@/auth";
 
 // Machine-to-machine routes keep their own auth (shared secret / HMAC signature)
 const PUBLIC_PREFIXES = ["/api/auth/", "/api/webhook/"];
@@ -9,7 +9,9 @@ export default auth((req) => {
   // exact match only — /api/leads/* (dashboard CRUD) must stay session-protected
   if (pathname === "/api/lead" || PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))) return;
 
-  if (!req.auth) {
+  // Re-check the allowlist on every request: removing an email from
+  // ALLOWED_EMAILS must revoke access immediately, not at JWT expiry.
+  if (!req.auth || !isAllowedEmail(req.auth.user?.email)) {
     const signInUrl = new URL("/api/auth/signin", req.nextUrl.origin);
     signInUrl.searchParams.set("callbackUrl", req.nextUrl.href);
     return NextResponse.redirect(signInUrl);

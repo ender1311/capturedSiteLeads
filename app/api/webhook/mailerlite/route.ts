@@ -4,7 +4,12 @@ import { supabaseAdmin } from "@/lib/supabase";
 
 function verifySignature(rawBody: string, signature: string | null): boolean {
   const secret = process.env.MAILERLITE_WEBHOOK_SECRET;
-  if (!secret) return true; // verification disabled when no secret is configured
+  if (!secret) {
+    // Fail-open by design so engagement tracking works before the secret is
+    // configured — worst case is forged open/click counts, never data access.
+    console.warn("MAILERLITE_WEBHOOK_SECRET is unset — accepting unverified webhook events");
+    return true;
+  }
   if (!signature) return false;
   const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
   const a = Buffer.from(expected);

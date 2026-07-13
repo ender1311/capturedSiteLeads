@@ -120,6 +120,7 @@ export function LeadsTable({ initialLeads }: { initialLeads: Lead[] }) {
           </button>
           <a
             href="/api/leads/export"
+            download
             className="rounded-lg bg-[#337a80] px-3 py-1.5 text-sm font-semibold text-white hover:bg-[#2a6d72]"
           >
             Export CSV
@@ -216,7 +217,13 @@ export function LeadsTable({ initialLeads }: { initialLeads: Lead[] }) {
                 </td>
                 <td className="px-4 py-3 text-right tabular-nums">{lead.opens}</td>
                 <td className="px-4 py-3 text-right tabular-nums">{lead.clicks}</td>
-                <td className="whitespace-nowrap px-4 py-3 text-zinc-500" title={new Date(lead.created_at).toLocaleString()}>
+                {/* suppressHydrationWarning: the relative time is clock-dependent, so the
+                    server-rendered text can lag the client's by a tick */}
+                <td
+                  suppressHydrationWarning
+                  className="whitespace-nowrap px-4 py-3 text-zinc-500"
+                  title={new Date(lead.created_at).toLocaleString()}
+                >
                   {timeAgo(lead.created_at)}
                 </td>
                 <td className="px-4 py-3 text-right">

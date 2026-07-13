@@ -44,8 +44,9 @@ export async function generateReportHtml(input: {
   scrapedMarkdown: string;
   pain?: string;
 }): Promise<{ html: string; model: string }> {
-  const context = (await getLiveGuide()).value;
-  const model = (await getLiveModel()) || process.env.LLM_MODEL || DEFAULT_MODEL;
+  const [guide, liveModel] = await Promise.all([getLiveGuide(), getLiveModel()]);
+  const context = guide.value;
+  const model = liveModel || process.env.LLM_MODEL || DEFAULT_MODEL;
 
   const { object } = await generateObject({
     model,

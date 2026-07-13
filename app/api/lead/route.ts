@@ -7,52 +7,58 @@ import { storePdf } from "@/lib/storage";
 import { addSubscriber } from "@/lib/mailerlite";
 import { sendReportEmail } from "@/lib/email";
 import { supabaseAdmin } from "@/lib/supabase";
-import { checkDailyLimits, normalizeEmail, unsafeUrlReason, visitorIp } from "@/lib/abuse";
+import { checkDailyLimits, normalizeEmail, secretMatches, unsafeUrlReason, visitorIp } from "@/lib/abuse";
+import { leadEmail, leadName, leadPain, leadSiteUrl } from "@/lib/lead-fields";
 
 export const maxDuration = 300;
 
 const leadSchema = z.object({
-  name: z.string().min(1).max(200),
-  email: z.string().email(),
-  site_url: z
-    .string()
-    .min(4)
-    .transform((u) => (/^https?:\/\//i.test(u) ? u : `https://${u}`))
-    .pipe(z.string().url()),
-  pain: z.string().max(500).optional(),
+  name: leadName,
+  email: leadEmail,
+  site_url: leadSiteUrl,
+  pain: leadPain,
 });
 
+// The ?secret= fallback exists because Elementor's webhook action can't set
+// custom headers. Query strings can land in logs — prefer the header wherever
+// the caller supports it, and rotate LEAD_WEBHOOK_SECRET if it ever leaks.
 function authorized(req: NextRequest): boolean {
   const secret = process.env.LEAD_WEBHOOK_SECRET;
   if (!secret) return false;
   return (
-    req.headers.get("x-lead-secret") === secret ||
-    req.nextUrl.searchParams.get("secret") === secret
+    secretMatches(req.headers.get("x-lead-secret"), secret) ||
+    secretMatches(req.nextUrl.searchParams.get("secret"), secret)
   );
 }
 
 // Accepts JSON ({name, email, site_url}) or form-encoded posts from the
 // Elementor webhook action. Elementor field IDs vary, so extraction is
 // tolerant: exact keys first, then fuzzy key/value matching.
-async function parseBody(
-  req: NextRequest
-): Promise<{ body: unknown; rawFields: Record<string, string> }> {
+async function parseBody(req: NextRequest): Promise<{
+  body: unknown;
+  rawFields: Record<string, string>;
+  meta: Record<string, string>;
+  isForm: boolean;
+}> {
   const type = req.headers.get("content-type") ?? "";
   if (type.includes("application/json")) {
-    return { body: await req.json().catch(() => null), rawFields: {} };
+    return { body: await req.json().catch(() => null), rawFields: {}, meta: {}, isForm: false };
   }
   const form = await req.formData().catch(() => null);
-  if (!form) return { body: null, rawFields: {} };
+  if (!form) return { body: null, rawFields: {}, meta: {}, isForm: true };
 
   // Elementor sends different shapes depending on "Advanced Data":
   //   off -> name=Dan                              (flat)
   //   on  -> fields[email][value]=…  fields[email][id]=…  fields[field_abc][value]=…
-  //          form[name]="New Form"  meta[remote_ip]=…
-  // Normalize all of them into one flat map keyed by field id. The `[value]`
-  // sub-key is authoritative; `[id]/[type]/[title]` metadata is dropped; the
-  // `form[...]` namespace (form-level metadata) is ignored so "New Form"
-  // can't pollute the lead's name.
+  //          form[name]="New Form"  meta[remote_ip]=…  meta[page_url]=…
+  // Normalize into a flat map keyed by field id. The `[value]` sub-key is
+  // authoritative; `[id]/[type]/[title]` metadata is dropped; the `form[...]`
+  // namespace (form-level metadata) is ignored so "New Form" can't pollute
+  // the lead's name. The `meta[...]` namespace is kept SEPARATE from fields:
+  // meta carries the visitor IP, but also page_url (the page hosting the
+  // form), which must never win the fuzzy site_url match below.
   const fields: Record<string, string> = {};
+  const meta: Record<string, string> = {};
   form.forEach((rawValue, key) => {
     if (typeof rawValue !== "string") return;
     const value = rawValue.trim();
@@ -62,9 +68,11 @@ async function parseBody(
     const ns = parts[0];
     if (ns === "form") return;
 
+    let target = fields;
     let fieldId: string | undefined;
     let sub: string | undefined;
     if (ns === "fields" || ns === "form_fields" || ns === "meta") {
+      if (ns === "meta") target = meta;
       fieldId = parts[1];
       sub = parts[2];
     } else {
@@ -76,7 +84,7 @@ async function parseBody(
 
     const k = fieldId.toLowerCase();
     // a [value] sub-key always wins; otherwise first non-empty value sticks
-    if (sub === "value" || fields[k] === undefined) fields[k] = value;
+    if (sub === "value" || target[k] === undefined) target[k] = value;
   });
 
   const byKey = (re: RegExp) =>
@@ -98,7 +106,7 @@ async function parseBody(
   if (!email || !site_url || !name) {
     console.warn("Lead form keys received:", JSON.stringify(Object.keys(fields)));
   }
-  return { body: { name, email, site_url, pain }, rawFields: fields };
+  return { body: { name, email, site_url, pain }, rawFields: fields, meta, isForm: true };
 }
 
 export async function POST(req: NextRequest) {
@@ -106,7 +114,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { body, rawFields } = await parseBody(req);
+  const { body, rawFields, meta, isForm } = await parseBody(req);
   const parsed = leadSchema.safeParse(body);
   if (!parsed.success) {
     return NextResponse.json(
@@ -116,7 +124,10 @@ export async function POST(req: NextRequest) {
   }
   const { name, site_url, pain } = parsed.data;
   const email = normalizeEmail(parsed.data.email);
-  const ip = visitorIp(req, rawFields);
+  // Form posts arrive via the WordPress server, so proxy headers hold the WP
+  // server's IP — shared by ALL legit visitors. Trust headers only for direct
+  // (JSON) callers; for form posts the visitor IP must come from form meta.
+  const ip = visitorIp(req, { ...rawFields, ...meta }, { trustHeaders: !isForm });
 
   const urlProblem = unsafeUrlReason(site_url);
   if (urlProblem) {

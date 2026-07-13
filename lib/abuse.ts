@@ -1,7 +1,16 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { supabaseAdmin } from "./supabase";
 
 export const DAILY_LIMIT_PER_KEY = 3;
+
+// Constant-time secret comparison (hashing first equalizes lengths).
+export function secretMatches(provided: string | null, expected: string): boolean {
+  if (!provided) return false;
+  const a = createHash("sha256").update(provided).digest();
+  const b = createHash("sha256").update(expected).digest();
+  return timingSafeEqual(a, b);
+}
 
 export function normalizeEmail(email: string): string {
   return email.trim().toLowerCase();
@@ -18,15 +27,21 @@ export function emailLimitKey(email: string): string {
   return `${key}@${domain}`;
 }
 
-// The webhook arrives from the WordPress server, so the visitor's IP comes
-// from Elementor's advanced-data meta when available; the socket/proxy IP is
-// only a fallback (it covers direct API callers).
-export function visitorIp(req: NextRequest, rawFields: Record<string, string>): string | null {
-  for (const [key, value] of Object.entries(rawFields)) {
+// The visitor's IP comes from Elementor's advanced-data meta when available.
+// Proxy headers are trusted only when the caller says so (direct API posts):
+// for form posts relayed by WordPress they'd hold the WP server's IP, and
+// rate-limiting on that would block every visitor at once.
+export function visitorIp(
+  req: NextRequest,
+  formFields: Record<string, string>,
+  opts: { trustHeaders: boolean }
+): string | null {
+  for (const [key, value] of Object.entries(formFields)) {
     if (/remote_?ip|user_?ip|client_?ip/i.test(key) && /^[0-9a-f.:]+$/i.test(value)) {
       return value;
     }
   }
+  if (!opts.trustHeaders) return null;
   const fwd = req.headers.get("x-forwarded-for");
   if (fwd) return fwd.split(",")[0].trim();
   return req.headers.get("x-real-ip");

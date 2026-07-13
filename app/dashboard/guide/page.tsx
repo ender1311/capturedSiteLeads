@@ -1,7 +1,5 @@
 import { GuideEditor } from "./guide-editor";
 
-export const dynamic = "force-dynamic";
-
 export default function GuidePage() {
   return (
     <div>
