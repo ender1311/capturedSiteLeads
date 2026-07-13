@@ -1,4 +1,5 @@
 import { deliveryEmailHtml, deliverySubject } from "./email-template";
+import { getEmailProvider } from "./guide-store";
 import { sendPdfEmail } from "./mailerlite";
 import { pdfFilename } from "./storage";
 
@@ -35,17 +36,18 @@ async function sendViaResend(input: {
   }
 }
 
-// Resend (attachment + link, authenticated domain) when configured; falls
-// back to a MailerLite campaign (link only) when unset OR when Resend errors
-// (e.g. domain not yet verified, transient outage) — a delivery-path problem
-// must never cost a lead their report.
+// Provider is admin-selectable in the dashboard (app_config, default
+// MailerLite). Resend (attachment + link, authenticated domain) falls back to
+// a MailerLite campaign (link only) when the key is unset or Resend errors —
+// a delivery-path problem must never cost a lead their report.
 export async function sendReportEmail(input: {
   name: string;
   email: string;
   pdfUrl: string;
   pdf: Buffer;
 }): Promise<void> {
-  if (process.env.RESEND_API_KEY) {
+  const provider = await getEmailProvider().catch(() => "mailerlite" as const);
+  if (provider === "resend" && process.env.RESEND_API_KEY) {
     try {
       await sendViaResend(input);
       return;

@@ -30,6 +30,29 @@ export async function resetGuide(): Promise<void> {
   if (error) throw new Error(`Guide reset failed: ${error.message}`);
 }
 
+export type EmailProvider = "mailerlite" | "resend";
+
+const EMAIL_PROVIDER_KEY = "email_provider";
+
+// Which service sends the roadmap-delivery email. Defaults to MailerLite:
+// its campaign opens/clicks feed the dashboard stats via webhook. Resend
+// requires RESEND_API_KEY and the verified capturedsites.com domain.
+export async function getEmailProvider(): Promise<EmailProvider> {
+  const { data } = await supabaseAdmin()
+    .from("app_config")
+    .select("value")
+    .eq("key", EMAIL_PROVIDER_KEY)
+    .maybeSingle();
+  return data?.value === "resend" ? "resend" : "mailerlite";
+}
+
+export async function saveEmailProvider(provider: EmailProvider): Promise<void> {
+  const { error } = await supabaseAdmin()
+    .from("app_config")
+    .upsert({ key: EMAIL_PROVIDER_KEY, value: provider, updated_at: new Date().toISOString() });
+  if (error) throw new Error(`Email provider save failed: ${error.message}`);
+}
+
 const MODEL_KEY = "llm_model";
 
 export async function getLiveModel(): Promise<string | null> {

@@ -1,4 +1,5 @@
 import { GuideEditor } from "./guide-editor";
+import { EmailProviderPicker } from "./email-provider-picker";
 
 export default function GuidePage() {
   return (
@@ -9,8 +10,9 @@ export default function GuidePage() {
         Edit, save, then run a test generation to see the effect — no emails are sent and no
         leads are recorded by tests.
       </p>
-      <div className="mt-6">
+      <div className="mt-6 space-y-6">
         <GuideEditor />
+        <EmailProviderPicker />
       </div>
     </div>
   );
