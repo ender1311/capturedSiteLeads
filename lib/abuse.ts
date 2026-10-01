@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
-import { supabaseAdmin } from "./supabase";
+import { sql } from "./db";
 
 export const DAILY_LIMIT_PER_KEY = 3;
 
@@ -87,14 +87,15 @@ export async function checkDailyLimits(input: {
   ip: string | null;
 }): Promise<RateCheck> {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const { data, error } = await supabaseAdmin()
-    .from("leads")
-    .select("email, ip")
-    .gt("created_at", since)
-    .limit(2000);
-  if (error) throw new Error(`Rate-limit lookup failed: ${error.message}`);
+  let rows: { email: string | null; ip: string | null }[];
+  try {
+    rows = (await sql()`
+      select email, ip from leads where created_at > ${since} limit 2000
+    `) as { email: string | null; ip: string | null }[];
+  } catch (e) {
+    throw new Error(`Rate-limit lookup failed: ${(e as Error).message}`);
+  }
 
-  const rows = data ?? [];
   const cap = Number(process.env.LEAD_DAILY_CAP) || 50;
   if (rows.length > cap) {
     return { allowed: false, reason: `daily service cap reached (${cap}/day)` };

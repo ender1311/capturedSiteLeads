@@ -1,33 +1,42 @@
-import { supabaseAdmin } from "./supabase";
+import { sql } from "./db";
 import { AGENT_GUIDE } from "./agent-guide";
 
 const KEY = "agent_guide";
 
 export { AGENT_GUIDE as DEFAULT_GUIDE };
 
+type ConfigRow = { value: string; updated_at: string };
+
+async function readConfig(key: string): Promise<ConfigRow | null> {
+  const rows = (await sql()`
+    select value, updated_at from app_config where key = ${key}
+  `) as ConfigRow[];
+  return rows[0] ?? null;
+}
+
+async function writeConfig(key: string, value: string): Promise<void> {
+  await sql()`
+    insert into app_config (key, value, updated_at)
+    values (${key}, ${value}, now())
+    on conflict (key) do update set value = excluded.value, updated_at = now()
+  `;
+}
+
 // The guide the LLM actually uses: DB override if saved, else the baked-in default.
 export async function getLiveGuide(): Promise<{ value: string; updatedAt: string | null; isDefault: boolean }> {
-  const { data } = await supabaseAdmin()
-    .from("app_config")
-    .select("value, updated_at")
-    .eq("key", KEY)
-    .maybeSingle();
-  if (data?.value?.trim()) {
-    return { value: data.value, updatedAt: data.updated_at, isDefault: false };
+  const row = await readConfig(KEY);
+  if (row?.value?.trim()) {
+    return { value: row.value, updatedAt: row.updated_at, isDefault: false };
   }
   return { value: AGENT_GUIDE, updatedAt: null, isDefault: true };
 }
 
 export async function saveGuide(value: string): Promise<void> {
-  const { error } = await supabaseAdmin()
-    .from("app_config")
-    .upsert({ key: KEY, value, updated_at: new Date().toISOString() });
-  if (error) throw new Error(`Guide save failed: ${error.message}`);
+  await writeConfig(KEY, value);
 }
 
 export async function resetGuide(): Promise<void> {
-  const { error } = await supabaseAdmin().from("app_config").delete().eq("key", KEY);
-  if (error) throw new Error(`Guide reset failed: ${error.message}`);
+  await sql()`delete from app_config where key = ${KEY}`;
 }
 
 export type EmailProvider = "mailerlite" | "resend";
@@ -38,35 +47,21 @@ const EMAIL_PROVIDER_KEY = "email_provider";
 // its campaign opens/clicks feed the dashboard stats via webhook. Resend
 // requires RESEND_API_KEY and the verified capturedsites.com domain.
 export async function getEmailProvider(): Promise<EmailProvider> {
-  const { data } = await supabaseAdmin()
-    .from("app_config")
-    .select("value")
-    .eq("key", EMAIL_PROVIDER_KEY)
-    .maybeSingle();
-  return data?.value === "resend" ? "resend" : "mailerlite";
+  const row = await readConfig(EMAIL_PROVIDER_KEY);
+  return row?.value === "resend" ? "resend" : "mailerlite";
 }
 
 export async function saveEmailProvider(provider: EmailProvider): Promise<void> {
-  const { error } = await supabaseAdmin()
-    .from("app_config")
-    .upsert({ key: EMAIL_PROVIDER_KEY, value: provider, updated_at: new Date().toISOString() });
-  if (error) throw new Error(`Email provider save failed: ${error.message}`);
+  await writeConfig(EMAIL_PROVIDER_KEY, provider);
 }
 
 const MODEL_KEY = "llm_model";
 
 export async function getLiveModel(): Promise<string | null> {
-  const { data } = await supabaseAdmin()
-    .from("app_config")
-    .select("value")
-    .eq("key", MODEL_KEY)
-    .maybeSingle();
-  return data?.value?.trim() || null;
+  const row = await readConfig(MODEL_KEY);
+  return row?.value?.trim() || null;
 }
 
 export async function saveModel(model: string): Promise<void> {
-  const { error } = await supabaseAdmin()
-    .from("app_config")
-    .upsert({ key: MODEL_KEY, value: model, updated_at: new Date().toISOString() });
-  if (error) throw new Error(`Model save failed: ${error.message}`);
+  await writeConfig(MODEL_KEY, model);
 }

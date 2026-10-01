@@ -2,7 +2,7 @@
 
 Next.js app on Vercel that turns website-redesign form submissions into personalized AI redesign proposal PDFs and a nurture email sequence.
 
-**Flow:** WordPress form → `POST /api/lead` → Firecrawl scrape → LLM report (Vercel AI Gateway) → PDF (puppeteer + chromium) → Vercel Blob → MailerLite sequence → Supabase → `/dashboard`.
+**Flow:** WordPress form → `POST /api/lead` → Firecrawl scrape → LLM report (Vercel AI Gateway) → PDF (puppeteer + chromium) → Vercel Blob → MailerLite sequence → Neon Postgres → `/dashboard`.
 
 See [SPEC.md](./SPEC.md) for the full plan, costs, and API contracts.
 
@@ -25,7 +25,7 @@ Google OAuth client setup (one-time, console.cloud.google.com → APIs & Service
 
 ### One-time service setup
 
-1. **Supabase**: create a free project, run `supabase/schema.sql` in the SQL editor, copy the URL + service-role key.
+1. **Neon Postgres**: `vercel integration add neon` (Vercel Marketplace auto-injects `DATABASE_URL`), then apply `db/schema.sql` once against the new database.
 2. **Firecrawl**: grab an API key at firecrawl.dev (1K free credits).
 3. **MailerLite**: create an API key, a group (note its ID), and an automation triggered by "joins group" that sends the 3-email sequence (use the `pdf_url` custom field in the emails). Add a webhook for open/click events pointing at `https://<your-domain>/api/webhook/mailerlite`.
 4. **Vercel**: import the GitHub repo, connect a Blob store (Storage tab), enable AI Gateway, and add the env vars from `.env.example` (`vercel env add ...`). `BLOB_READ_WRITE_TOKEN` and `AI_GATEWAY_API_KEY` are auto-injected on Vercel.

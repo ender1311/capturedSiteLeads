@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase";
+import { incrementEngagement } from "@/lib/db";
 
 function verifySignature(rawBody: string, signature: string | null): boolean {
   const secret = process.env.MAILERLITE_WEBHOOK_SECRET;
@@ -32,7 +32,6 @@ export async function POST(req: NextRequest) {
 
   // MailerLite may batch events; normalize to an array
   const events = Array.isArray(payload.events) ? payload.events : [payload];
-  const supabase = supabaseAdmin();
 
   for (const raw of events) {
     const event = raw as {
@@ -51,11 +50,11 @@ export async function POST(req: NextRequest) {
         : null;
     if (!column) continue;
 
-    const { error } = await supabase.rpc("increment_engagement", {
-      lead_email: email,
-      counter: column,
-    });
-    if (error) console.error(`Engagement update failed for ${email}:`, error.message);
+    try {
+      await incrementEngagement(email, column);
+    } catch (e) {
+      console.error(`Engagement update failed for ${email}:`, (e as Error).message);
+    }
   }
 
   return NextResponse.json({ ok: true });

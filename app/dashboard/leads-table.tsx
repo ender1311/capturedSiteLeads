@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import type { Lead } from "@/lib/supabase";
+import type { Lead } from "@/lib/db";
 
 const STATUS_STYLES: Record<string, string> = {
   complete: "bg-green-100 text-green-800",

@@ -1,4 +1,4 @@
-import { supabaseAdmin, type Lead } from "@/lib/supabase";
+import { sql, type Lead } from "@/lib/db";
 import { LeadsTable } from "./leads-table";
 
 export const dynamic = "force-dynamic";
@@ -14,27 +14,40 @@ function Stat({ label, value, hint }: { label: string; value: string | number; h
 }
 
 export default async function Dashboard() {
-  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+  if (!process.env.DATABASE_URL) {
     return (
       <p className="text-zinc-500">
-        Supabase is not configured. Set <code>SUPABASE_URL</code> and{" "}
-        <code>SUPABASE_SERVICE_ROLE_KEY</code>, then run <code>supabase/schema.sql</code>.
+        The database is not configured. Set <code>DATABASE_URL</code>, then apply{" "}
+        <code>db/schema.sql</code>.
       </p>
     );
   }
 
-  const { data, error, count } = await supabaseAdmin()
-    .from("leads")
-    .select("*", { count: "exact" })
-    .order("created_at", { ascending: false })
-    .limit(500);
-
-  if (error) {
-    return <p className="text-red-600">Failed to load leads: {error.message}</p>;
+  // count(*) over() is evaluated before LIMIT, so this is the true total in a
+  // single round trip. The ::int cast keeps it a number (bigint arrives as text).
+  let rows: (Lead & { total_count: number })[];
+  try {
+    rows = (await sql()`
+      select *, (count(*) over())::int as total_count
+      from leads
+      order by created_at desc
+      limit 500
+    `) as (Lead & { total_count: number })[];
+  } catch (e) {
+    const message = (e as Error).message;
+    return (
+      <div className="text-red-600">
+        <p>Failed to load leads: {message}</p>
+        <p className="mt-2 text-sm text-zinc-500">
+          The app could not reach the database. Check that the Neon project is active and{" "}
+          <code>DATABASE_URL</code> is current.
+        </p>
+      </div>
+    );
   }
 
-  const leads = (data ?? []) as Lead[];
-  const totalLeads = count ?? leads.length;
+  const leads = rows as Lead[];
+  const totalLeads = rows[0]?.total_count ?? 0;
   const delivered = leads.filter((l) => l.status === "complete");
   const opened = delivered.filter((l) => l.opens > 0).length;
   const clicked = delivered.filter((l) => l.clicks > 0).length;

@@ -6,7 +6,7 @@ import { htmlToPdf } from "@/lib/pdf";
 import { storePdf } from "@/lib/storage";
 import { addSubscriber } from "@/lib/mailerlite";
 import { sendReportEmail } from "@/lib/email";
-import { supabaseAdmin } from "@/lib/supabase";
+import { sql } from "@/lib/db";
 import { checkDailyLimits, normalizeEmail, secretMatches, unsafeUrlReason, visitorIp } from "@/lib/abuse";
 import { leadEmail, leadName, leadPain, leadSiteUrl } from "@/lib/lead-fields";
 
@@ -134,14 +134,16 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Rejected URL: ${urlProblem}` }, { status: 400 });
   }
 
-  const supabase = supabaseAdmin();
-  const { data: lead, error: insertError } = await supabase
-    .from("leads")
-    .insert({ name, email, site_url, ip, status: "processing" })
-    .select("id")
-    .single();
-  if (insertError) {
-    return NextResponse.json({ error: insertError.message }, { status: 500 });
+  let lead: { id: string };
+  try {
+    const inserted = (await sql()`
+      insert into leads (name, email, site_url, ip, status)
+      values (${name}, ${email}, ${site_url}, ${ip}, 'processing')
+      returning id
+    `) as { id: string }[];
+    lead = inserted[0];
+  } catch (e) {
+    return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
 
   // Rate limits are counted AFTER inserting this attempt, so rejected and
@@ -151,10 +153,9 @@ export async function POST(req: NextRequest) {
     return { allowed: true as const }; // fail open: a limiter outage shouldn't drop real leads
   });
   if (!limit.allowed) {
-    await supabase
-      .from("leads")
-      .update({ status: "rejected", error: limit.reason })
-      .eq("id", lead.id);
+    await sql()`
+      update leads set status = 'rejected', error = ${limit.reason} where id = ${lead.id}
+    `;
     return NextResponse.json({ error: limit.reason }, { status: 429 });
   }
 
@@ -173,17 +174,17 @@ export async function POST(req: NextRequest) {
       const pdfUrl = await storePdf(pdf, { name });
       await addSubscriber({ name, email, siteUrl: site_url, pdfUrl });
       await sendReportEmail({ name, email, pdfUrl, pdf });
-      await supabase
-        .from("leads")
-        .update({ pdf_url: pdfUrl, status: "complete", model })
-        .eq("id", lead.id);
+      await sql()`
+        update leads
+        set pdf_url = ${pdfUrl}, status = 'complete', model = ${model}
+        where id = ${lead.id}
+      `;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error("Lead pipeline failed:", message);
-      await supabase
-        .from("leads")
-        .update({ status: "failed", error: message })
-        .eq("id", lead.id);
+      await sql()`
+        update leads set status = 'failed', error = ${message} where id = ${lead.id}
+      `;
     }
   });
 

@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabase";
+import { incrementEngagement } from "@/lib/db";
 
 // Resend webhooks are Svix-signed: HMAC-SHA256 over "<id>.<timestamp>.<body>"
 // keyed with the base64 part of the whsec_ secret; the svix-signature header
@@ -53,11 +53,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, ignored: true });
   }
 
-  const { error } = await supabaseAdmin().rpc("increment_engagement", {
-    lead_email: email,
-    counter: column,
-  });
-  if (error) console.error(`Engagement update failed for ${email}:`, error.message);
+  try {
+    await incrementEngagement(email, column);
+  } catch (e) {
+    console.error(`Engagement update failed for ${email}:`, (e as Error).message);
+  }
 
   return NextResponse.json({ ok: true });
 }
