@@ -1,3 +1,5 @@
+> **Note (2026-11-04):** the flow below is the old roadmap flow. Free Audit and the Homepage Fixes report now share one pipeline; see [the Homepage Fixes design](superpowers/specs/2026-11-03-homepage-fixes-design.md) and the [go-live checklist](homepage-fixes-go-live.md).
+
 # WordPress / Elementor Form Setup — Free Audit Lead Intake
 
 Instructions for wiring the "Free Audit" page form (capturedsites.com, Elementor) to the lead-intake app. The app receives the submission, scrapes the lead's website, generates their personalized "Dream Client Roadmap" PDF, and emails it via the MailerLite "Lead Generator Funnel" automation.

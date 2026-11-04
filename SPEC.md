@@ -1,3 +1,5 @@
+> **Note (2026-11-04):** the flow below is the old roadmap flow. Free Audit and the Homepage Fixes report now share one pipeline; see [the Homepage Fixes design](docs/superpowers/specs/2026-11-03-homepage-fixes-design.md) and the [go-live checklist](docs/homepage-fixes-go-live.md).
+
 # Captured Site Leads — Redesign Intake App (Spec)
 
 Maggie's WordPress site collects leads (name, email, site URL). This app receives that data, scrapes the lead's site, generates an AI redesign proposal PDF, emails it via a MailerLite sequence, and tracks engagement in a dashboard.
