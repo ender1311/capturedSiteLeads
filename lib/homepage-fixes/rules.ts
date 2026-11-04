@@ -76,8 +76,9 @@ export function autoFix(c: ReportContent): ReportContent {
   return n;
 }
 
+// Dash-insensitive: autoFix turns dashes into commas, so both sides map dashes and commas to ", ".
 const normalize = (t: string) =>
-  straighten(t).toLowerCase().replace(/\s+/g, " ").trim();
+  straighten(t).toLowerCase().replace(/\s*[—–-]\s*|\s*,\s*/g, ", ").replace(/\s+/g, " ").trim();
 const normalizeQuote = (t: string) => normalize(t).replace(/[\s.,!?;:]+$/, "");
 
 export function checkContent(c: ReportContent, pageText: string): RuleIssue[] {
@@ -98,6 +99,8 @@ export function checkContent(c: ReportContent, pageText: string): RuleIssue[] {
     if (TECH_NUMBER.test(t)) err(label, 'has a technical number. Say "twice as large" or "a long way down the page" instead.');
     if (EXCLAIM.test(t)) warn(label, "has an exclamation point (only keep it if it's their own words in quotes).");
 
+    if (WHOLE_SITE.test(t)) err(label, 'The fixes cover the homepage only. Remove "whole site" language.');
+
     for (const m of t.matchAll(/captured sites/gi)) {
       if (m[0] !== "Captured Sites") err(label, `spells Captured Sites as "${m[0]}". Use exactly "Captured Sites".`);
     }
@@ -109,7 +112,5 @@ export function checkContent(c: ReportContent, pageText: string): RuleIssue[] {
     }
   }
 
-  const all = entries(c).map((e) => e[1]).join(" ");
-  if (WHOLE_SITE.test(all)) err("content", 'The fixes cover the homepage only. Remove "whole site" language.');
   return issues;
 }

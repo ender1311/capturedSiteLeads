@@ -82,7 +82,7 @@ describe("rules", () => {
   it('"your whole site" is an error', () => {
     const c = clone();
     c.fixes[0].why = "Change your whole site.";
-    expect(errorsOf(c).some((i) => /homepage only/i.test(i.message))).toBe(true);
+    expect(errorsOf(c).some((i) => i.field === "fixes[1].why" && /homepage only/i.test(i.message))).toBe(true);
   });
 
   it('"newsletter" is an error', () => {
@@ -133,6 +133,15 @@ describe("rules", () => {
     const page = PAGE.replace("I'm your", "I’m your");
     c.fixes[0].noticed = 'Try "I\'m your friend with the camera".';
     expect(errorsOf(c, page)).toEqual([]);
+  });
+
+  it("quote check survives autoFix of dashes inside a quoted testimonial", () => {
+    const page = PAGE + '\nShe said \u2014 best day ever \u2013 and meant it';
+    const c = clone();
+    c.fixes[0].noticed = 'A client says "She said \u2014 best day ever \u2013 and meant it" on your page.';
+    const fixed = autoFix(c);
+    expect(fixed.fixes[0].noticed).toContain("She said, best day ever, and meant it");
+    expect(errorsOf(fixed, page)).toEqual([]);
   });
 
   it('"Captured sites" misspelled is an error', () => {
