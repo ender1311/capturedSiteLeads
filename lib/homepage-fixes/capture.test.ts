@@ -125,6 +125,8 @@ describe("captureSite", () => {
     expect(scripts.filter((x: string) => x === DISMISS_SCRIPT)).toHaveLength(3);
     expect(scripts.indexOf(FRAME_SCRIPT)).toBe(1);
     expect(scripts[scripts.length - 1]).toBe(EXTRACT_SCRIPT);
+    // The frame sits inside the viewport (invisible) so scroll animations can fire.
+    expect(FRAME_SCRIPT).toMatch(/left:0;top:0;.*opacity:0;pointer-events:none/);
   });
 
   it("maps Firecrawl errors to unreachable", async () => {

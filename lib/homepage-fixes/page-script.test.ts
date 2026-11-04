@@ -65,6 +65,20 @@ describe.skipIf(!hasChrome)("EXTRACT_SCRIPT nav pick (Chrome)", () => {
     expect(p.navColor).toBe("rgb(255, 255, 255)");
   });
 
+  it("keeps un-triggered fade-ins (opacity 0 with an animation class or transition) in rows", async () => {
+    const p = await extract(`<h1 class="preFade" style="opacity:0">A Fun Wedding Photographer</h1>
+      <p style="opacity:0;transition:opacity 0.6s">About me copy that fades in</p>
+      <div class="sqs-block"><div><p style="opacity:0">Nested in a block</p></div></div>
+      <p style="opacity:0">Really invisible text</p>
+      <p class="fade-in" style="visibility:hidden">Hidden menu text</p>`);
+    const texts = p.rows.map((r) => r.text);
+    expect(texts).toContain("A Fun Wedding Photographer");
+    expect(texts).toContain("About me copy that fades in");
+    expect(texts).toContain("Nested in a block");
+    expect(texts).not.toContain("Really invisible text");
+    expect(texts).not.toContain("Hidden menu text");
+  });
+
   it("returns no nav and navTop false when there are no nav links", async () => {
     const p = await extract(`<div style="padding:20px">Jane Doe</div>`);
     expect(p.nav).toEqual([]);

@@ -40,7 +40,7 @@ export const FRAME_SCRIPT = `(function () {
   var f = document.createElement('iframe');
   f.id = '${FRAME_ID}';
   f.setAttribute('sandbox', 'allow-scripts allow-same-origin');
-  f.setAttribute('style', 'position:fixed;left:-20000px;top:0;width:${SCREEN_W}px;height:${SCREEN_H}px;border:0');
+  f.setAttribute('style', 'position:fixed;left:0;top:0;width:${SCREEN_W}px;height:${SCREEN_H}px;border:0;z-index:2147483647;opacity:0;pointer-events:none');
   f.src = location.href;
   document.body.appendChild(f);
   return 'frame added';
@@ -105,7 +105,18 @@ export const DISMISS_SCRIPT = `(function () {${RESOLVE}
 // screenshot stays clean. Returns JSON.stringify(PageData without `dismissed`).
 export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
   W.scrollTo(0, 0); window.scrollTo(0, 0);
-  var vis = function (el) { var r = el.getBoundingClientRect(); var s = W.getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && +s.opacity !== 0; };
+  // Opacity 0 still counts as visible when the element (or an ancestor within 3 levels) is an
+  // un-triggered fade-in: an animation-ish class or attribute, or a transition/animation set.
+  var animRe = /fade|animate|reveal|aos|sqs-block|preFade|in-view/i;
+  var fadeIn = function (el) {
+    for (var e = el, k = 0; e && e.nodeType === 1 && k < 4; e = e.parentElement, k++) {
+      if (animRe.test(String(e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className || '')) || e.hasAttribute('data-aos') || e.hasAttribute('data-animation')) return true;
+      var cs = W.getComputedStyle(e);
+      if (/[1-9]/.test(cs.transitionDuration || '') || (cs.animationName && cs.animationName !== 'none')) return true;
+    }
+    return false;
+  };
+  var vis = function (el) { var r = el.getBoundingClientRect(); var s = W.getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && (+s.opacity !== 0 || fadeIn(el)); };
   var arr = function (list) { return Array.prototype.slice.call(list); };
   var transparent = function (c) {
     if (!c || c === 'transparent') return true;
