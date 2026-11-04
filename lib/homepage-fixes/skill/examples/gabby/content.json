@@ -1,0 +1,48 @@
+{
+ "first_name": "Gabby",
+ "website": "gabbyjphotography.com",
+ "goal": "More inquiries from couples and graduates",
+ "first_section": {
+  "photo": "photos/photo-01.jpg",
+  "photo_focus": "50% 35%",
+  "layout": "center",
+  "nav_position": "bottom",
+  "nav_style": "bar",
+  "logo_text": "GABBY J",
+  "nav_items": ["Home", "About", "Portfolio", "Investment", "Contact"],
+  "heading_font": "Cormorant Garamond",
+  "body_font": "Manrope",
+  "uppercase_headline": true,
+  "headline": "Your Friend With the Camera",
+  "subline": "Graduation, couples, and wedding photographer in central and southeast Alabama",
+  "button": "Reach Out"
+ },
+ "first_section_changes": [
+  "\"Photography for all steps of life\" became \"Your friend with the camera,\" built from your own intro, so visitors feel your warmth right away.",
+  "Your location was the smallest text in the section, tucked in the corner. Now \"graduation, couples, and wedding photographer in central and southeast Alabama\" sits right under your headline.",
+  "Your first section didn't have a way to reach out yet. Now one invitation takes visitors straight to your inquiry form."
+ ],
+ "fixes": [
+  {
+   "title": "Let your story show what sets you apart",
+   "noticed": "Your intro is so easy to like, and Holleigh says you met every idea she brought with a yes and had so many fun posing ideas. Right now, though, the biggest words in the middle of your homepage are \"Alabama-based, Travel Ready,\" set more than twice as large as your personal line, \"A lover of life, color, and all things fun.\"",
+   "why": "Lots of photographers take beautiful photos. What makes someone choose you is how it feels to work with you, and right now that's the part a visitor sees the least of.",
+   "changes": [
+    "Make \"A lover of life, color, and all things fun.\" the biggest words in the middle of your homepage.",
+    "Make \"Alabama-based, Travel Ready\" smaller, since your location now sits right under your headline.",
+    "Keep your intro and Holleigh's words together, so the visitor can picture their session with you before they reach out."
+   ]
+  },
+  {
+   "title": "Turn your warmest visitors into inquiries",
+   "noticed": "Someone who reads your intro and Holleigh's kind words is your warmest visitor. Right after that, your homepage shows your Instagram feed and \"Follow me on Instagram!!!\", and the only button on the page, \"Read More,\" goes to your About page. Nothing on your homepage asks the visitor to reach out yet.",
+   "why": "When the next thing the visitor sees leads off your site, they follow it, get caught up in their feed, and may never come back to inquire.",
+   "changes": [
+    "Add a button right after Holleigh's words that goes to your inquiry form.",
+    "Use the same wording as the button in your first section.",
+    "Move your Instagram feed and \"Follow me on Instagram!!!\" below that button."
+   ]
+  }
+ ],
+ "notes_for_maggie": "Headline built from her intro line \"I'm your friend with the camera.\" Holleigh's quote is from the testimonial on her homepage."
+}
