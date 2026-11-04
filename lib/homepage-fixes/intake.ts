@@ -10,8 +10,8 @@ import {
 import { runHomepageFixes, DEFAULT_DEADLINE_MS } from "./pipeline";
 import {
   REPORT_TYPE, claimCapAlert, claimHfLead, domainOf, getCachedCapture, getHfLead, insertHfLead,
-  latestSentFor, putCachedCapture, queuedLeads, recentProcessingFor, retryingLeads, updateHfLead,
-  type HfOutcome,
+  latestSentFor, markStuckLeads, putCachedCapture, queuedLeads, recentProcessingFor, retryingLeads,
+  updateHfLead, type HfOutcome,
 } from "./store";
 import { TIMEOUT_PASS, checkEmail, checkWebsite, withDeadline, type FieldCheck } from "./validate";
 
@@ -25,6 +25,8 @@ const RECHECK_DEADLINE_MS = 5000;
 const DEDUPE_DAYS = 7;
 const TWIN_MINUTES = 10;
 const RETRY_AFTER_MINUTES = 10;
+// A build attempt lasts at most 300 s; one still `processing` after this long was killed mid-run.
+const STUCK_AFTER_MINUTES = 20;
 const MAX_PER_SWEEP = 20;
 // A sweep shares one 300 s function. Each lead gets the rest of the 270 s pipeline budget, and a
 // new lead starts only while that still leaves room for a full worst-case run (capture, write,
@@ -85,6 +87,7 @@ export async function handleHomepageFixes(req: NextRequest): Promise<NextRespons
     goal: parsed.data.goal,
   };
 
+  const received = Date.now();
   let id: string;
   try {
     id = await insertHfLead({ ...lead, ip, outcome: "processing" });
@@ -95,20 +98,29 @@ export async function handleHomepageFixes(req: NextRequest): Promise<NextRespons
     return ok({ status: "error" });
   }
 
-  try {
-    const status = await triage(id, lead, ip, str(raw.site_url));
-    return ok({ id, status });
-  } catch (e) {
-    const error = `intake failed: ${errText(e)}`;
-    console.error(`Homepage fixes lead ${id}: ${error}`);
-    await updateHfLead(id, { error }).catch(() => {});
-    await sendAlert("failed", { id, name: lead.name, email: lead.email, site_url: lead.siteUrl, error });
-    return ok({ id, status: "error" });
-  }
+  // Answer Elementor now (its webhook may give up after about 5 s); the re-checks, limits and the
+  // build all run after the response. The row's outcome records where each lead ended up.
+  after(async () => {
+    try {
+      await triage(id, lead, ip, str(raw.site_url), received);
+    } catch (e) {
+      const error = `intake failed: ${errText(e)}`;
+      console.error(`Homepage fixes lead ${id}: ${error}`);
+      await updateHfLead(id, { error }).catch(() => {});
+      await sendAlert("failed", { id, name: lead.name, email: lead.email, site_url: lead.siteUrl, error });
+    }
+  });
+  return ok({ id, status: "processing" });
 }
 
-/** Everything between saving the row and answering Elementor. Returns the row's outcome. */
-async function triage(id: string, lead: DeliverLead, ip: string | null, typedSite: string): Promise<HfOutcome> {
+/**
+ * Everything after the row is saved, run in after(): re-checks, limits, duplicates, the cap, then
+ * the build. `received` is when the request came in, so the build gets what's left of 270 s.
+ * Returns the row's outcome.
+ */
+async function triage(
+  id: string, lead: DeliverLead, ip: string | null, typedSite: string, received: number,
+): Promise<HfOutcome> {
   // 1. The on-page checks again, server-side (the snippet can be skipped).
   const [emailCheck, siteCheck] = await Promise.all([
     recheck(checkEmail(lead.email)),
@@ -137,11 +149,12 @@ async function triage(id: string, lead: DeliverLead, ip: string | null, typedSit
       outcome: "limited",
       error: earlier ? `${limit.reason}; re-sent the report from lead ${earlier.id}` : limit.reason,
     });
-    if (earlier) after(() => resendEarlier(id, lead, earlier.pdf_url, "limited"));
+    if (earlier) await resendEarlier(id, lead, earlier.pdf_url, "limited");
     return "limited";
   }
 
-  // 3. The same person and site already being built (a double submit): this one stops quietly.
+  // 3. The same person and site already on its way (a double submit, even on a capped day):
+  //    this one stops quietly.
   const twin = await recentProcessingFor(lead.email, domain, TWIN_MINUTES, id).catch((e) => {
     console.warn("Concurrent duplicate lookup failed:", errText(e));
     return null;
@@ -155,7 +168,7 @@ async function triage(id: string, lead: DeliverLead, ip: string | null, typedSit
   //    Checked before the cap: a re-send costs nothing, so it never waits in the queue.
   const earlier = await earlierSent();
   if (earlier) {
-    after(() => resendEarlier(id, lead, earlier.pdf_url, "sent"));
+    await resendEarlier(id, lead, earlier.pdf_url, "sent");
     return "sent";
   }
 
@@ -167,13 +180,13 @@ async function triage(id: string, lead: DeliverLead, ip: string | null, typedSit
       return false;
     });
     if (first) {
-      after(() => sendAlert("cap", { id, name: lead.name, email: lead.email, site_url: lead.siteUrl, error: limit.reason }));
+      await sendAlert("cap", { id, name: lead.name, email: lead.email, site_url: lead.siteUrl, error: limit.reason });
     }
     return "queued";
   }
 
-  // 6. Build it after the response.
-  after(() => processLead(id));
+  // 6. Build it, with the time triage already used taken off the pipeline's budget.
+  await processLead(id, { deadlineMs: DEFAULT_DEADLINE_MS - (Date.now() - received) });
   return "processing";
 }
 
@@ -249,9 +262,11 @@ export async function processLead(leadId: string, opts: { deadlineMs?: number } 
 }
 
 /**
- * Cron body. Default (every 15 minutes): re-runs leads in `retrying` once. `queue` (7:00
- * Eastern): builds `queued` leads oldest first, up to what the day's cap allows. Both take at
- * most 20 leads, one at a time, and stop starting new ones when time runs short.
+ * Cron body. Default (every 15 minutes): alerts once for each row stuck in `processing`, then
+ * re-runs leads in `retrying` once. `queue` (7:00 Eastern): builds `queued` leads oldest first,
+ * up to what the day's cap allows; a queued lead whose person already got a report for this site
+ * in the last 7 days gets that report again instead. Both take at most 20 leads, one at a time,
+ * and stop starting new ones when time runs short.
  */
 export async function sweep(opts: { queue?: boolean } = {}): Promise<{ queued: number; retried: number }> {
   const started = Date.now();
@@ -262,6 +277,7 @@ export async function sweep(opts: { queue?: boolean } = {}): Promise<{ queued: n
     for (const id of ids) {
       if (elapsed() > LATEST_START_MS) break;
       if (!(await claimHfLead(id, [from]))) continue; // someone else got it
+      if (from === "queued" && (await resentInstead(id))) continue;
       await processLead(id, { deadlineMs: DEFAULT_DEADLINE_MS - elapsed() });
       counts[key]++;
     }
@@ -271,7 +287,35 @@ export async function sweep(opts: { queue?: boolean } = {}): Promise<{ queued: n
     const room = Math.min(await capRemaining(REPORT_TYPE), MAX_PER_SWEEP);
     if (room > 0) await run(await queuedLeads(room), "queued", "queued");
   } else {
+    await alertStuck();
     await run(await retryingLeads(RETRY_AFTER_MINUTES, MAX_PER_SWEEP), "retrying", "retried");
   }
   return counts;
+}
+
+/** A claimed queued lead whose person already has a report for this site: limited, and re-sent. */
+async function resentInstead(id: string): Promise<boolean> {
+  const row = await getHfLead(id);
+  if (!row) return true;
+  const earlier = await latestSentFor(row.email, domainOf(row.site_url), DEDUPE_DAYS).catch(() => null);
+  if (!earlier) return false;
+  const lead: DeliverLead = { name: row.name, email: row.email, siteUrl: row.site_url, goal: row.goal ?? "" };
+  await updateHfLead(id, { outcome: "limited", error: `duplicate of lead ${earlier.id}; re-sent its report` });
+  await resendEarlier(id, lead, earlier.pdf_url, "limited");
+  return true;
+}
+
+/** One alert per row stuck in `processing`; the row itself is left for a human. Never throws. */
+async function alertStuck(): Promise<void> {
+  let stuck;
+  try {
+    stuck = await markStuckLeads(STUCK_AFTER_MINUTES);
+  } catch (e) {
+    console.error("Stuck-row check failed:", errText(e));
+    return;
+  }
+  for (const r of stuck) {
+    const since = new Date(r.since).toISOString();
+    await sendAlert("failed", { id: r.id, name: r.name, email: r.email, site_url: r.site_url, error: `stuck in processing since ${since}` });
+  }
 }

@@ -24,6 +24,10 @@ export type DeliverLead = { name: string; email: string; siteUrl: string; goal: 
 export type AlertLead = { id: string; name: string; email: string; site_url: string; error?: string };
 type Attachment = { filename: string; content: string };
 
+const firstWord = (name: string) => name.trim().split(/\s+/)[0] ?? "";
+// Emails to the photographer greet by first name ("Hi Jane,"); MailerLite and alerts keep the full name.
+const greet = (lead: DeliverLead) => firstWord(lead.name) || lead.name;
+
 /** The photographer already has their email; only the bookkeeping after it failed. Never retry. */
 export class DeliveredNotRecordedError extends Error {
   readonly leadId: string;
@@ -121,10 +125,10 @@ export async function deliver(leadId: string, lead: DeliverLead, result: Pipelin
         put(`${folder}/after.jpg`, result.after, { access: "public", contentType: "image/jpeg" }),
       ]);
       const attach = result.pdf.length <= MAX_ATTACHMENT_BYTES;
-      await sendToPhotographer(lead, reportEmail(lead.name, pdf.url, attach), {
+      await sendToPhotographer(lead, reportEmail(greet(lead), pdf.url, attach), {
         pdfUrl: pdf.url,
         attachment: attach ? { filename: fileName, content: result.pdf.toString("base64") } : undefined,
-        fallback: reportEmail(lead.name, pdf.url, false),
+        fallback: reportEmail(greet(lead), pdf.url, false),
       });
       await afterSend(leadId, lead, async () => {
         await upsertSubscriber(lead, "sent", {
@@ -142,7 +146,7 @@ export async function deliver(leadId: string, lead: DeliverLead, result: Pipelin
       return;
     }
     case "hobby": {
-      await sendToPhotographer(lead, hobbyEmail(lead.name, result.compliment));
+      await sendToPhotographer(lead, hobbyEmail(greet(lead), result.compliment));
       await afterSend(leadId, lead, async () => {
         await upsertSubscriber(lead, "hobby");
         await updateHfLead(leadId, {
@@ -153,7 +157,7 @@ export async function deliver(leadId: string, lead: DeliverLead, result: Pipelin
       return;
     }
     case "cant_see": {
-      await sendToPhotographer(lead, cantSeeEmail(lead.name, cantSeeReason(result.reason)));
+      await sendToPhotographer(lead, cantSeeEmail(greet(lead), cantSeeReason(result.reason)));
       await afterSend(leadId, lead, async () => {
         await upsertSubscriber(lead, "cant_see");
         await updateHfLead(leadId, { outcome: "cant_see", content: { reason: result.reason }, ...usageCols(result) });
@@ -177,8 +181,6 @@ export async function deliver(leadId: string, lead: DeliverLead, result: Pipelin
   }
 }
 
-const firstWord = (name: string) => name.trim().split(/\s+/)[0] ?? "";
-
 /**
  * Re-sends a report the photographer already has (a repeat request, or one over the daily limit):
  * the same report email, the PDF attached when it downloads and fits, MailerLite link-only only
@@ -197,8 +199,8 @@ export async function resendReport(lead: DeliverLead, pdfUrl: string): Promise<v
   } catch (err) {
     console.warn("Could not fetch the earlier PDF to attach; sending the link only:", (err as Error).message);
   }
-  await sendToPhotographer(lead, reportEmail(lead.name, pdfUrl, !!attachment), {
-    pdfUrl, attachment, fallback: reportEmail(lead.name, pdfUrl, false),
+  await sendToPhotographer(lead, reportEmail(greet(lead), pdfUrl, !!attachment), {
+    pdfUrl, attachment, fallback: reportEmail(greet(lead), pdfUrl, false),
   });
 }
 
@@ -210,7 +212,7 @@ export async function resendReport(lead: DeliverLead, pdfUrl: string): Promise<v
 export async function deliverFailed(leadId: string, lead: DeliverLead, error: string): Promise<void> {
   const alertLead = { id: leadId, name: lead.name, email: lead.email, site_url: lead.siteUrl };
   try {
-    await sendToPhotographer(lead, cantSeeEmail(lead.name, "couldnt_load"));
+    await sendToPhotographer(lead, cantSeeEmail(greet(lead), "couldnt_load"));
   } catch (err) {
     const message = `${error}\nthe can't-see email also failed: ${err instanceof Error ? err.message : String(err)}`;
     await updateHfLead(leadId, { outcome: "failed", error: message });

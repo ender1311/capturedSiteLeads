@@ -9,6 +9,7 @@ import { NextRequest } from "next/server";
 type Row = {
   id: string; seq: number; name: string; email: string; site_url: string; goal: string | null;
   ip: string | null; outcome: string; retry_count: number; pdf_url: string | null; error: string | null;
+  started_minutes_ago: number | null; stuck_alerted: boolean;
   report_type: string; content: unknown;
   input_tokens: number | null; output_tokens: number | null; cost_usd: string | null; model: string | null;
 };
@@ -31,6 +32,7 @@ const h = vi.hoisted(() => {
         id, seq: state.seq, name: i.name, email: i.email, site_url: i.siteUrl, goal: i.goal, ip: i.ip,
         outcome: i.outcome, retry_count: 0, pdf_url: null, error: null, report_type: "homepage_fixes", content: null,
         input_tokens: null, output_tokens: null, cost_usd: null, model: null,
+        started_minutes_ago: i.outcome === "processing" ? 0 : null, stuck_alerted: false,
       });
       return id;
     }),
@@ -51,7 +53,7 @@ const h = vi.hoisted(() => {
     recentProcessingFor: vi.fn(async (email: string, domain: string, _mins: number, beforeId: string) => {
       const me = find(beforeId)!;
       const hit = state.rows.find((r) =>
-        r.report_type === "homepage_fixes" && r.outcome === "processing" && r.seq < me.seq &&
+        r.report_type === "homepage_fixes" && ["processing", "queued", "retrying"].includes(r.outcome) && r.seq < me.seq &&
         r.email === email && dom(r.site_url) === dom(domain));
       return hit ? { id: hit.id } : null;
     }),
@@ -59,10 +61,18 @@ const h = vi.hoisted(() => {
       const r = find(id);
       if (!r || !from.includes(r.outcome)) return false;
       r.outcome = "processing";
+      r.started_minutes_ago = 0;
+      r.stuck_alerted = false;
       return true;
     }),
-    retryingLeads: vi.fn(async () =>
-      state.rows.filter((r) => r.outcome === "retrying" && r.retry_count === 1).sort((a, b) => a.seq - b.seq).map((r) => r.id)),
+    markStuckLeads: vi.fn(async (mins: number) => {
+      const stuck = state.rows.filter((r) =>
+        r.outcome === "processing" && !r.stuck_alerted && (r.started_minutes_ago ?? 0) > mins);
+      for (const r of stuck) r.stuck_alerted = true;
+      return stuck.map((r) => ({ id: r.id, name: r.name, email: r.email, site_url: r.site_url, since: "2026-11-04T10:00:00.000Z" }));
+    }),
+    retryingLeads: vi.fn(async (mins: number) =>
+      state.rows.filter((r) => r.outcome === "retrying" && r.retry_count === 1 && (r.started_minutes_ago ?? 99) > mins).sort((a, b) => a.seq - b.seq).map((r) => r.id)),
     queuedLeads: vi.fn(async (limit: number) =>
       state.rows.filter((r) => r.outcome === "queued").sort((a, b) => a.seq - b.seq).slice(0, limit).map((r) => r.id)),
     claimCapAlert: vi.fn(async (day: string) => {
@@ -122,11 +132,21 @@ const toPhotographer = (email: string) => resendCalls().filter((c) => (c.body!.t
 const alerts = () => resendCalls().filter((c) => (c.body!.to as string[]).includes("dan@test.com"));
 const mailerlite = () => sent.filter((c) => c.url.startsWith("https://connect.mailerlite.com"));
 
+// Runs everything after() scheduled, concurrently like separate requests' after() work would.
 async function flushAfter() {
   while (h.state.afterQueue.length) {
-    const fn = h.state.afterQueue.shift()!;
-    await fn();
+    const batch = h.state.afterQueue.splice(0);
+    await Promise.all(batch.map((fn) => fn()));
   }
+}
+
+/** Posts, lets the after-response work finish, and returns the saved row. */
+async function postAndSettle(body: Record<string, unknown>, opts: Parameters<typeof jsonPost>[1] = {}) {
+  const res = await hfPOST(jsonPost(body, opts));
+  expect(res.status).toBe(200);
+  const { id } = await res.json();
+  await flushAfter();
+  return row(id);
 }
 
 function jsonPost(body: Record<string, unknown>, opts: { secret?: string; path?: string; ip?: string } = {}) {
@@ -149,6 +169,7 @@ function seed(r: Partial<Row>) {
     id, seq: h.state.seq, name: "Jane", email: "jane@example.com", site_url: "https://janedoe.com", goal: "g", ip: null,
     outcome: "sent", retry_count: 0, pdf_url: null, error: null, report_type: "homepage_fixes", content: null,
     input_tokens: null, output_tokens: null, cost_usd: null, model: null,
+    started_minutes_ago: null, stuck_alerted: false,
     ...r,
   });
   return id;
@@ -216,6 +237,7 @@ describe("POST /api/homepage-fixes", () => {
       goal: "More inquiries from couples", outcome: "processing", ip: "9.9.9.9",
     });
     expect(h.after).toHaveBeenCalledTimes(1);
+    expect(h.checkEmail).not.toHaveBeenCalled(); // the response doesn't wait for the re-checks
     expect(h.runHomepageFixes).not.toHaveBeenCalled();
     await flushAfter();
     expect(h.runHomepageFixes).toHaveBeenCalledTimes(1);
@@ -228,7 +250,7 @@ describe("POST /api/homepage-fixes", () => {
   });
 
   it("re-checks the email and the website server-side with the visitor's own site text", async () => {
-    await hfPOST(jsonPost(JANE));
+    await postAndSettle(JANE);
     expect(h.checkEmail).toHaveBeenCalledWith("jane@example.com");
     expect(h.checkWebsite).toHaveBeenCalledWith("janedoe.com");
   });
@@ -273,19 +295,16 @@ describe("POST /api/homepage-fixes", () => {
 
   it("invalid email server-side → outcome invalid, no email, no pipeline", async () => {
     h.checkEmail.mockResolvedValue({ ok: false, code: "no_mail", message: "m" });
-    const res = await hfPOST(jsonPost(JANE));
-    expect(res.status).toBe(200);
-    expect((await res.json()).status).toBe("invalid");
-    expect(row("lead-1").outcome).toBe("invalid");
-    expect(row("lead-1").error).toMatch(/email: no_mail/);
-    await flushAfter();
+    const r = await postAndSettle(JANE);
+    expect(r.outcome).toBe("invalid");
+    expect(r.error).toMatch(/email: no_mail/);
     expect(h.runHomepageFixes).not.toHaveBeenCalled();
     expect(resendCalls()).toHaveLength(0);
   });
 
   it("a placeholder site server-side → outcome invalid", async () => {
     h.checkWebsite.mockResolvedValue({ ok: false, code: "placeholder", message: "m" });
-    await hfPOST(jsonPost(JANE));
+    await postAndSettle(JANE);
     expect(row("lead-1").outcome).toBe("invalid");
     expect(row("lead-1").error).toMatch(/website: placeholder/);
   });
@@ -294,10 +313,13 @@ describe("POST /api/homepage-fixes", () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     h.checkEmail.mockReturnValue(new Promise(() => {}));
     h.checkWebsite.mockRejectedValue(new Error("dns down"));
-    const pending = hfPOST(jsonPost(JANE));
-    await vi.advanceTimersByTimeAsync(5000);
-    const res = await pending;
+    const res = await hfPOST(jsonPost(JANE));
     expect((await res.json()).status).toBe("processing");
+    const settled = flushAfter();
+    await vi.advanceTimersByTimeAsync(5000);
+    await settled;
+    expect(h.runHomepageFixes).toHaveBeenCalledTimes(1);
+    expect(row("lead-1").outcome).toBe("sent");
   });
 
   it("a malformed payload still gets 200 and an invalid row", async () => {
@@ -318,9 +340,7 @@ describe("POST /api/homepage-fixes", () => {
 
   it("second submission same email+domain within 7 days re-sends the existing PDF, no pipeline run", async () => {
     seed({ outcome: "sent", pdf_url: "https://blob.test/homepage-fixes/x/your-top-homepage-fixes-jane.pdf", site_url: "https://www.janedoe.com/" });
-    const res = await hfPOST(jsonPost(JANE));
-    expect(res.status).toBe(200);
-    await flushAfter();
+    await postAndSettle(JANE);
     expect(h.runHomepageFixes).not.toHaveBeenCalled();
     expect(row("lead-2")).toMatchObject({ outcome: "sent", pdf_url: "https://blob.test/homepage-fixes/x/your-top-homepage-fixes-jane.pdf" });
     const mail = toPhotographer("jane@example.com");
@@ -334,9 +354,9 @@ describe("POST /api/homepage-fixes", () => {
 
   it("two simultaneous posts produce one pipeline run; the second is limited with no email", async () => {
     const [a, b] = await Promise.all([hfPOST(jsonPost(JANE)), hfPOST(jsonPost(JANE))]);
-    const statuses = [(await a.json()).status, (await b.json()).status].sort();
-    expect(statuses).toEqual(["limited", "processing"]);
+    expect([a.status, b.status]).toEqual([200, 200]);
     await flushAfter();
+    expect(row("lead-1").outcome).toBe("sent");
     expect(h.runHomepageFixes).toHaveBeenCalledTimes(1);
     expect(row("lead-2")).toMatchObject({ outcome: "limited" });
     expect(row("lead-2").error).toMatch(/lead-1/);
@@ -345,10 +365,9 @@ describe("POST /api/homepage-fixes", () => {
 
   it("4th submission of the day → limited, no email when there's no earlier PDF", async () => {
     for (const site of ["a.com", "b.com", "c.com"]) seed({ outcome: "cant_see", site_url: `https://${site}` });
-    const res = await hfPOST(jsonPost(JANE));
-    expect((await res.json()).status).toBe("limited");
-    expect(row("lead-4").error).toMatch(/email limit/);
-    await flushAfter();
+    const r = await postAndSettle(JANE);
+    expect(r.outcome).toBe("limited");
+    expect(r.error).toMatch(/email limit/);
     expect(h.runHomepageFixes).not.toHaveBeenCalled();
     expect(resendCalls()).toHaveLength(0);
   });
@@ -357,25 +376,22 @@ describe("POST /api/homepage-fixes", () => {
     seed({ outcome: "sent", pdf_url: "https://blob.test/p/your-top-homepage-fixes-jane.pdf" });
     seed({ outcome: "cant_see", site_url: "https://b.com" });
     seed({ outcome: "cant_see", site_url: "https://c.com" });
-    const res = await hfPOST(jsonPost(JANE));
-    expect((await res.json()).status).toBe("limited");
-    await flushAfter();
-    expect(row("lead-4").outcome).toBe("limited");
+    expect((await postAndSettle(JANE)).outcome).toBe("limited");
     expect(toPhotographer("jane@example.com")).toHaveLength(1);
     expect(h.runHomepageFixes).not.toHaveBeenCalled();
   });
 
   it("per-IP limit applies too", async () => {
     for (const e of ["a@x.com", "b@x.com", "c@x.com"]) seed({ email: e, ip: "9.9.9.9", outcome: "sent" });
-    const res = await hfPOST(jsonPost(JANE));
-    expect((await res.json()).status).toBe("limited");
-    expect(row("lead-4").error).toMatch(/IP limit/);
+    const r = await postAndSettle(JANE);
+    expect(r.outcome).toBe("limited");
+    expect(r.error).toMatch(/IP limit/);
   });
 
   it("roadmap rows don't count toward the homepage-fixes limits", async () => {
     for (let i = 0; i < 5; i++) seed({ report_type: "roadmap", outcome: "sent" });
-    const res = await hfPOST(jsonPost(JANE));
-    expect((await res.json()).status).toBe("processing");
+    await postAndSettle(JANE);
+    expect(h.runHomepageFixes).toHaveBeenCalledTimes(1);
   });
 
   it("cap reached → queued, one cap alert per day", async () => {
@@ -383,15 +399,44 @@ describe("POST /api/homepage-fixes", () => {
     seed({ email: "a@x.com", site_url: "https://a.com", outcome: "sent" });
     seed({ email: "b@x.com", site_url: "https://b.com", outcome: "held" });
     seed({ email: "c@x.com", site_url: "https://c.com", outcome: "invalid" }); // never built: doesn't count
-    const first = await hfPOST(jsonPost(JANE));
-    const second = await hfPOST(jsonPost({ ...JANE, email: "kim@example.com", site_url: "kim.com" }, { ip: "8.8.8.8" }));
-    expect((await first.json()).status).toBe("queued");
-    expect((await second.json()).status).toBe("queued");
-    await flushAfter();
+    const first = await postAndSettle(JANE);
+    const second = await postAndSettle({ ...JANE, email: "kim@example.com", site_url: "kim.com" }, { ip: "8.8.8.8" });
+    expect(first.outcome).toBe("queued");
+    expect(second.outcome).toBe("queued");
     expect(h.runHomepageFixes).not.toHaveBeenCalled();
     expect(alerts()).toHaveLength(1);
     expect(String(alerts()[0].body!.subject)).toMatch(/cap/i);
     expect(resendCalls()).toHaveLength(1); // nothing to the photographers yet
+  });
+
+  it("a double submit on a capped day leaves one queued and one limited", async () => {
+    vi.stubEnv("HOMEPAGE_FIXES_DAILY_CAP", "1");
+    seed({ email: "a@x.com", site_url: "https://a.com", outcome: "sent" });
+    const first = await postAndSettle(JANE); // queued before the second arrives
+    const second = await postAndSettle(JANE);
+    expect(first.outcome).toBe("queued");
+    expect(second.outcome).toBe("limited");
+    expect(second.error).toMatch(new RegExp(`duplicate of lead ${first.id}`));
+    expect(toPhotographer("jane@example.com")).toHaveLength(0);
+  });
+
+  it("a resubmit while the first waits for its retry is limited", async () => {
+    const first = seed({ outcome: "retrying", retry_count: 1 });
+    const r = await postAndSettle(JANE);
+    expect(r.outcome).toBe("limited");
+    expect(r.error).toMatch(new RegExp(first));
+    expect(h.runHomepageFixes).not.toHaveBeenCalled();
+  });
+
+  it("the build gets the pipeline budget minus the time triage took", async () => {
+    let t = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => t);
+    h.checkEmail.mockImplementation(async () => {
+      t += 4_000; // a slow re-check
+      return { ok: true, code: "ok" };
+    });
+    await postAndSettle(JANE);
+    expect(h.runHomepageFixes.mock.calls[0][0].deadlineMs).toBe(270_000 - 4_000);
   });
 });
 
@@ -433,6 +478,22 @@ describe("processLead", () => {
     expect(alerts()).toHaveLength(1);
     const ml = mailerlite().find((c) => c.body && "fields" in c.body)!;
     expect(ml.body!.fields).toMatchObject({ hf_outcome: "failed", pdf_url: "" });
+  });
+
+  it("emails greet by first name: re-sent report and the failed path", async () => {
+    seed({ name: "Jane Doe", outcome: "sent", pdf_url: "https://blob.test/p/your-top-homepage-fixes-jane.pdf" });
+    await postAndSettle({ ...JANE, name: "Jane Doe" });
+    const id = seed({ name: "Jane Doe", email: "jd@example.com", outcome: "processing", retry_count: 1 });
+    h.runHomepageFixes.mockRejectedValueOnce(new Error("boom"));
+    await processLead(id);
+    const [report] = toPhotographer("jane@example.com");
+    expect(report.body!.subject).toBe("Jane, your homepage fixes are ready");
+    expect(String(report.body!.text)).toMatch(/^Hi Jane,/);
+    const [failed] = toPhotographer("jd@example.com");
+    expect(failed.body!.subject).toBe("Jane, a quick note about your homepage fixes");
+    expect(String(failed.body!.text)).toMatch(/^Hi Jane,/);
+    const sub = mailerlite().find((c) => c.body && "fields" in c.body)!;
+    expect(sub.body!.fields).toMatchObject({ name: "Jane Doe" });
   });
 
   it("a delivery error after the email went out is never retried", async () => {
@@ -496,6 +557,39 @@ describe("sweep and the cron route", () => {
     expect(r).toEqual({ queued: 2, retried: 0 });
     expect(h.deliver.mock.calls.map((c) => c[0])).toEqual([q1, q2]);
     expect(row(q3).outcome).toBe("queued");
+  });
+
+  it("a stuck processing row alerts once across two sweeps; a fresh one doesn't; neither changes", async () => {
+    const stuck = seed({ outcome: "processing", started_minutes_ago: 25 });
+    const fresh = seed({ email: "kim@example.com", outcome: "processing", started_minutes_ago: 3 });
+    await sweep();
+    await sweep();
+    expect(alerts()).toHaveLength(1);
+    expect(String(alerts()[0].body!.text)).toMatch(/stuck in processing since 2026-11-04T10:00:00.000Z/);
+    expect(String(alerts()[0].body!.text)).toContain(stuck);
+    expect(row(stuck)).toMatchObject({ outcome: "processing", retry_count: 0 });
+    expect(row(fresh)).toMatchObject({ outcome: "processing", stuck_alerted: false });
+    expect(h.store.markStuckLeads).toHaveBeenCalledWith(20);
+    expect(h.runHomepageFixes).not.toHaveBeenCalled();
+  });
+
+  it("a retry waits 10 minutes from when the failed attempt started", async () => {
+    const recent = seed({ outcome: "retrying", retry_count: 1, started_minutes_ago: 4 });
+    expect(await sweep()).toEqual({ queued: 0, retried: 0 });
+    expect(h.store.retryingLeads).toHaveBeenCalledWith(10, 20);
+    row(recent).started_minutes_ago = 11;
+    expect(await sweep()).toEqual({ queued: 0, retried: 1 });
+  });
+
+  it("queue run: a queued lead whose person already got a report for this site is limited and re-sent", async () => {
+    seed({ outcome: "sent", pdf_url: "https://blob.test/p/your-top-homepage-fixes-jane.pdf", id: "old" });
+    const q = seed({ outcome: "queued" });
+    const r = await sweep({ queue: true });
+    expect(h.runHomepageFixes).not.toHaveBeenCalled();
+    expect(row(q).outcome).toBe("limited");
+    expect(row(q).error).toMatch(/duplicate of lead old/);
+    expect(toPhotographer("jane@example.com")).toHaveLength(1);
+    expect(r.queued).toBe(0);
   });
 
   it("the retry run leaves the queue alone", async () => {

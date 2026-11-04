@@ -7,17 +7,19 @@
 // mockup and the PDF from the cached capture of the site, runs the copy rules and prints every
 // issue, then delivers it (Blob, Resend with the PDF attached, MailerLite, the row).
 // Refuses to send when the rules find errors or the PDF overflows, or when the lead is not
-// `held` (it may already have an email), unless --force.
+// `held` (it may already have an email), unless --force. Without --force the row is claimed
+// (held → processing in one statement) right before sending, so two people delivering the same
+// lead at once can't both send; a failure before the email goes out puts it back to held.
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { deliver } from "@/lib/homepage-fixes/deliver";
+import { DeliveredNotRecordedError, deliver } from "@/lib/homepage-fixes/deliver";
 import { buildFacts } from "@/lib/homepage-fixes/facts";
 import { overflowIssues } from "@/lib/homepage-fixes/pipeline";
 import { renderAfter, renderPdf } from "@/lib/homepage-fixes/render";
 import { fillReport } from "@/lib/homepage-fixes/render-html";
 import { checkContent, type RuleIssue } from "@/lib/homepage-fixes/rules";
-import { domainOf, getCachedCapture, getHfLead } from "@/lib/homepage-fixes/store";
+import { claimHfLead, domainOf, getCachedCapture, getHfLead, updateHfLead } from "@/lib/homepage-fixes/store";
 import type { Asset, ReportContent } from "@/lib/homepage-fixes/types";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -120,10 +122,20 @@ async function main() {
     inputTokens: row.input_tokens ?? 0, outputTokens: row.output_tokens ?? 0,
     costUsd: Number(row.cost_usd ?? 0), calls: 0,
   };
-  await deliver(row.id, { name: row.name, email: row.email, siteUrl: row.site_url, goal: row.goal ?? "" }, {
-    outcome: "sent", content, pdf: rendered.pdf, before: capture.before.data, after, facts, usage,
-    model: row.model ?? "",
-  });
+  if (!args.force && !(await claimHfLead(row.id, ["held"]))) {
+    throw new Error("the lead is no longer held (someone else may be delivering it); not sent");
+  }
+  try {
+    await deliver(row.id, { name: row.name, email: row.email, siteUrl: row.site_url, goal: row.goal ?? "" }, {
+      outcome: "sent", content, pdf: rendered.pdf, before: capture.before.data, after, facts, usage,
+      model: row.model ?? "",
+    });
+  } catch (e) {
+    if (!args.force && !(e instanceof DeliveredNotRecordedError)) {
+      await updateHfLead(row.id, { outcome: "held" }).catch(() => {});
+    }
+    throw e;
+  }
   console.log(`Sent to ${row.email}.`);
 }
 

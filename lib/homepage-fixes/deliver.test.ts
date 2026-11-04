@@ -294,12 +294,38 @@ describe("sendAlert", () => {
   });
 });
 
+describe("first-name greetings", () => {
+  const JANE_DOE = { ...LEAD, name: "Jane Doe" };
+  const greeting = (m: { body: Record<string, unknown> | null }) => String(m.body!.text).split("\n")[0];
+
+  it("report, can't-see and failed emails say Hi Jane, while MailerLite keeps the full name", async () => {
+    await deliver("lead-1", JANE_DOE, sent());
+    await deliver("lead-2", JANE_DOE, { outcome: "cant_see", reason: "unreachable", usage: USAGE });
+    await deliverFailed("lead-3", JANE_DOE, "boom");
+    const toJane = resend().filter((c) => (c.body!.to as string[]).includes("jane@example.com"));
+    expect(toJane.map((m) => m.body!.subject)).toEqual([
+      "Jane, your homepage fixes are ready",
+      "Jane, a quick note about your homepage fixes",
+      "Jane, a quick note about your homepage fixes",
+    ]);
+    expect(toJane.map(greeting)).toEqual(["Hi Jane,", "Hi Jane,", "Hi Jane,"]);
+    for (const sub of ml("/subscribers")) expect((sub.body!.fields as Record<string, string>).name).toBe("Jane Doe");
+  });
+
+  it("the hobby email greets by first name too", async () => {
+    await deliver("lead-1", JANE_DOE, { outcome: "hobby", compliment: "Lovely light.", facts: FACTS, usage: USAGE, model: "m" });
+    expect(greeting(resend()[0])).toBe("Hi Jane,");
+    expect(resend()[0].body!.subject).toBe("Jane, a little note about your website");
+  });
+});
+
 describe("resendReport", () => {
   it("re-sends the report email with the earlier PDF attached", async () => {
     await resendReport({ ...LEAD, name: "Jane Doe" }, "https://blob.test/homepage-fixes/x/your-top-homepage-fixes-jane.pdf");
     const [mail] = resend();
     expect(mail.body!.to).toEqual(["jane@example.com"]);
-    expect(mail.body!.subject).toBe("Jane Doe, your homepage fixes are ready");
+    expect(mail.body!.subject).toBe("Jane, your homepage fixes are ready");
+    expect(String(mail.body!.text)).toMatch(/^Hi Jane,/);
     expect(String(mail.body!.html)).toContain("attached to this email");
     expect(mail.body!.attachments).toEqual([
       { filename: "your-top-homepage-fixes-jane.pdf", content: Buffer.from("%PDF old").toString("base64") },

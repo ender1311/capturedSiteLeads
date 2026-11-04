@@ -16,7 +16,7 @@ vi.mock("@/lib/db", () => ({ sql: () => h.sqlFn }));
 vi.mock("@vercel/blob", () => ({ put: h.put }));
 
 import {
-  claimCapAlert, claimHfLead, domainOf, getCachedCapture, getHfLead, insertHfLead, latestSentFor,
+  claimCapAlert, claimHfLead, domainOf, getCachedCapture, getHfLead, insertHfLead, latestSentFor, markStuckLeads,
   putCachedCapture, queuedLeads, recentProcessingFor, retryingLeads, updateHfLead,
 } from "./store";
 
@@ -50,7 +50,8 @@ describe("store", () => {
     const id = await insertHfLead({ name: "Jane", email: "j@x.com", siteUrl: "https://x.com", goal: "g", ip: null, outcome: "processing" });
     expect(id).toBe("lead-1");
     expect(sqlText()).toMatch(/insert into leads/);
-    expect(h.tag.mock.calls[0].slice(1)).toEqual(["Jane", "j@x.com", "https://x.com", "g", null, "processing", "processing", "homepage_fixes"]);
+    expect(h.tag.mock.calls[0].slice(1)).toEqual(["Jane", "j@x.com", "https://x.com", "g", null, "processing", "processing", "homepage_fixes", "processing"]);
+    expect(sqlText()).toMatch(/processing_started_at[\s\S]*case when \? = 'processing' then now\(\) end/);
   });
 
   it("updateHfLead writes only whitelisted columns, casts content to jsonb, keeps status in step", async () => {
@@ -108,7 +109,7 @@ describe("store", () => {
   it("recentProcessingFor only counts earlier processing rows for the same email and site", async () => {
     expect(await recentProcessingFor(" Jane@X.com ", "https://www.X.com/", 10, "lead-2")).toBeNull();
     const text = sqlText();
-    expect(text).toMatch(/l\.outcome = 'processing'/);
+    expect(text).toMatch(/l\.outcome in \('processing', 'queued', 'retrying'\)/);
     expect(text).toMatch(/\(l\.created_at, l\.id\) < \(me\.created_at, me\.id\)/);
     expect(text).toMatch(/make_interval\(mins => \?\)/);
     expect(h.tag.mock.calls[0].slice(1)).toEqual(["lead-2", "homepage_fixes", "jane@x.com", "x.com", 10]);
@@ -118,7 +119,7 @@ describe("store", () => {
 
   it("claimHfLead moves a row to processing only from the given outcomes", async () => {
     expect(await claimHfLead("lead-1", ["retrying"])).toBe(false);
-    expect(sqlText()).toMatch(/update leads set outcome = 'processing', status = 'processing'/);
+    expect(sqlText()).toMatch(/update leads set outcome = 'processing', status = 'processing', processing_started_at = now\(\), stuck_alerted_at = null/);
     expect(sqlText()).toMatch(/outcome = any\(\?::text\[\]\)/);
     expect(h.tag.mock.calls[0].slice(1)).toEqual(["lead-1", "homepage_fixes", ["retrying"]]);
     h.tag.mockResolvedValueOnce([{ id: "lead-1" }]);
@@ -140,7 +141,18 @@ describe("store", () => {
     h.tag.mockResolvedValueOnce([{ id: "c" }]);
     expect(await retryingLeads(10, 20)).toEqual(["c"]);
     expect(sqlText()).toMatch(/outcome = 'retrying' and retry_count = 1/);
-    expect(sqlText()).toMatch(/created_at < now\(\) - make_interval\(mins => \?\)/);
+    expect(sqlText()).toMatch(/coalesce\(processing_started_at, created_at\) < now\(\) - make_interval\(mins => \?\)/);
+  });
+
+  it("markStuckLeads marks and returns processing rows past the limit that weren't alerted yet", async () => {
+    h.tag.mockResolvedValueOnce([{ id: "a", name: "Jane", email: "j@x.com", site_url: "https://x.com", since: "t" }]);
+    expect(await markStuckLeads(20)).toHaveLength(1);
+    const text = sqlText();
+    expect(text).toMatch(/^\s*update leads set stuck_alerted_at = now\(\)/);
+    expect(text).toMatch(/outcome = 'processing' and stuck_alerted_at is null/);
+    expect(text).toMatch(/coalesce\(processing_started_at, created_at\) < now\(\) - make_interval\(mins => \?\)/);
+    expect(text).not.toMatch(/set[^\n]*outcome =/);
+    expect(h.tag.mock.calls[0].slice(1)).toEqual(["homepage_fixes", 20]);
   });
 
   it("getHfLead returns the row or null", async () => {

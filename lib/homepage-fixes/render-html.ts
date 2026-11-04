@@ -54,17 +54,18 @@ const TOUR = "https://capturedsites.com/tour/";
 const TOUR_UTM = `${TOUR}?utm_source=homepage-fixes&utm_medium=pdf&utm_campaign=homepage-fixes`;
 const MIME: Record<string, string> = { ".svg": "image/svg+xml", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg" };
 
-let templateCache: { html: string; dir: string } | null = null;
-function template() {
-  if (!templateCache) {
-    const dir = path.join(process.cwd(), "lib/homepage-fixes/skill/template");
-    templateCache = { html: fs.readFileSync(path.join(dir, "report.html"), "utf8"), dir };
-  }
+// A literal path relative to the working directory (the project root under Next, vitest and the
+// CLIs). Turbopack scopes the file trace to this folder; a path built from process.cwd() made it
+// trace the whole project into every function that imports this module.
+const TEMPLATE_DIR = "lib/homepage-fixes/skill/template";
+let templateCache: string | null = null;
+function template(): string {
+  templateCache ??= fs.readFileSync(path.join(TEMPLATE_DIR, "report.html"), "utf8");
   return templateCache;
 }
 
 export function fillReport(c: ReportContent, imgs: { before: string; after: string }): string {
-  const { html: tpl, dir } = template();
+  const tpl = template();
   const name = c.first_name.trim();
   const vals: Record<string, string> = {
     FIRST_NAME: escAttr(name),
@@ -89,7 +90,7 @@ export function fillReport(c: ReportContent, imgs: { before: string; after: stri
     .replaceAll('src="after.jpg"', () => `src="${imgs.after}"`)
     .replaceAll('src="before.jpg"', () => `src="${imgs.before}"`)
     .replace(/src="(assets\/[^"]+)"/g, (_m, rel: string) => {
-      const file = path.join(dir, rel);
+      const file = path.join(TEMPLATE_DIR, rel);
       const mime = MIME[path.extname(file).toLowerCase()] ?? "application/octet-stream";
       return `src="data:${mime};base64,${fs.readFileSync(file).toString("base64")}"`;
     })

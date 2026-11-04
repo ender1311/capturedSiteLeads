@@ -34,8 +34,9 @@ export async function insertHfLead(i: {
   name: string; email: string; siteUrl: string; goal: string; ip: string | null; outcome: HfOutcome;
 }): Promise<string> {
   const rows = (await sql()`
-    insert into leads (name, email, site_url, goal, ip, outcome, status, report_type)
-    values (${i.name}, ${i.email}, ${i.siteUrl}, ${i.goal}, ${i.ip}, ${i.outcome}, ${STATUS[i.outcome]}, ${REPORT_TYPE})
+    insert into leads (name, email, site_url, goal, ip, outcome, status, report_type, processing_started_at)
+    values (${i.name}, ${i.email}, ${i.siteUrl}, ${i.goal}, ${i.ip}, ${i.outcome}, ${STATUS[i.outcome]}, ${REPORT_TYPE},
+      case when ${i.outcome} = 'processing' then now() end)
     returning id
   `) as { id: string }[];
   return rows[0].id;
@@ -107,8 +108,9 @@ export async function getHfLead(id: string): Promise<HfLeadRow | null> {
 
 /**
  * Another homepage-fixes row for this email and site, created before `beforeId` in the last
- * `withinMinutes` minutes, that is still being built. Only earlier rows count, so of two
- * simultaneous posts exactly one (the first) goes ahead.
+ * `withinMinutes` minutes, that is still on its way to an email: being built, queued for the
+ * next queue run, or waiting for its retry. Only earlier rows count, so of two simultaneous
+ * posts exactly one (the first) goes ahead.
  */
 export async function recentProcessingFor(
   email: string, domain: string, withinMinutes: number, beforeId: string,
@@ -116,7 +118,7 @@ export async function recentProcessingFor(
   const rows = (await sql()`
     select l.id from leads l, (select created_at, id from leads where id = ${beforeId}) me
     where l.report_type = ${REPORT_TYPE}
-      and l.outcome = 'processing'
+      and l.outcome in ('processing', 'queued', 'retrying')
       and l.id <> me.id
       and (l.created_at, l.id) < (me.created_at, me.id)
       and lower(l.email) = ${email.trim().toLowerCase()}
@@ -133,23 +135,44 @@ export async function recentProcessingFor(
  */
 export async function claimHfLead(id: string, from: HfOutcome[]): Promise<boolean> {
   const rows = (await sql()`
-    update leads set outcome = 'processing', status = 'processing'
+    update leads set outcome = 'processing', status = 'processing', processing_started_at = now(), stuck_alerted_at = null
     where id = ${id} and report_type = ${REPORT_TYPE} and outcome = any(${from}::text[])
     returning id
   `) as { id: string }[];
   return rows.length > 0;
 }
 
-/** Retry candidates: rows in `retrying` after one failure, created more than `olderThanMinutes` ago. */
+/**
+ * Retry candidates: rows in `retrying` after one failure whose failed attempt started more than
+ * `olderThanMinutes` ago (created_at for rows from before processing_started_at existed).
+ */
 export async function retryingLeads(olderThanMinutes: number, limit: number): Promise<string[]> {
   const rows = (await sql()`
     select id from leads
     where report_type = ${REPORT_TYPE} and outcome = 'retrying' and retry_count = 1
-      and created_at < now() - make_interval(mins => ${olderThanMinutes})
+      and coalesce(processing_started_at, created_at) < now() - make_interval(mins => ${olderThanMinutes})
     order by created_at asc
     limit ${limit}
   `) as { id: string }[];
   return rows.map((r) => r.id);
+}
+
+export type StuckLead = { id: string; name: string; email: string; site_url: string; since: string | Date };
+
+/**
+ * Rows in `processing` whose attempt started more than `olderThanMinutes` ago (the function was
+ * killed mid-run, or a re-send went out but couldn't be recorded), not yet alerted. Marks them
+ * alerted in the same statement, so each stuck row is reported once. Never changes the outcome:
+ * a human decides, since the email may or may not have gone out.
+ */
+export async function markStuckLeads(olderThanMinutes: number): Promise<StuckLead[]> {
+  const rows = (await sql()`
+    update leads set stuck_alerted_at = now()
+    where report_type = ${REPORT_TYPE} and outcome = 'processing' and stuck_alerted_at is null
+      and coalesce(processing_started_at, created_at) < now() - make_interval(mins => ${olderThanMinutes})
+    returning id, name, email, site_url, coalesce(processing_started_at, created_at) as since
+  `) as StuckLead[];
+  return rows;
 }
 
 /** Queued rows, oldest first. */
