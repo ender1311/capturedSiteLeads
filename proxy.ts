@@ -5,7 +5,14 @@ import { auth, isAllowedEmail } from "@/auth";
 const PUBLIC_PREFIXES = ["/api/auth/", "/api/webhook/"];
 // Exact paths reached by visitors on capturedsites.com (the homepage-fixes
 // on-page check and the script that calls it); rate-limited and CORS-scoped.
-const PUBLIC_PATHS = new Set(["/api/lead", "/api/homepage-fixes/check", "/homepage-fixes-check.js"]);
+// The homepage-fixes webhook checks LEAD_WEBHOOK_SECRET itself; the cron checks CRON_SECRET.
+const PUBLIC_PATHS = new Set([
+  "/api/lead",
+  "/api/homepage-fixes",
+  "/api/homepage-fixes/check",
+  "/homepage-fixes-check.js",
+  "/api/cron/homepage-fixes",
+]);
 
 export default auth((req) => {
   const { pathname } = req.nextUrl;

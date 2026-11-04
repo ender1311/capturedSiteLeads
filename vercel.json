@@ -1,0 +1,6 @@
+{
+  "crons": [
+    { "path": "/api/cron/homepage-fixes", "schedule": "*/15 * * * *" },
+    { "path": "/api/cron/homepage-fixes?queue=1", "schedule": "0 12 * * *" }
+  ]
+}

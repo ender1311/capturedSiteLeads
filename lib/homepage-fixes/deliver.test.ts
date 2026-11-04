@@ -15,7 +15,7 @@ const h = vi.hoisted(() => {
 vi.mock("@/lib/db", () => ({ sql: () => h.sqlFn }));
 vi.mock("@vercel/blob", () => ({ put: h.put }));
 
-import { DeliveredNotRecordedError, deliver, sendAlert } from "./deliver";
+import { DeliveredNotRecordedError, deliver, deliverFailed, resendReport, sendAlert } from "./deliver";
 
 type Call = { url: string; method: string; body: Record<string, unknown> | null };
 let calls: Call[] = [];
@@ -40,6 +40,9 @@ beforeEach(() => {
     calls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : null });
     if (url.startsWith("https://api.resend.com")) {
       return new Response(JSON.stringify(resendStatus === 200 ? { id: "email-1" } : { message: "boom" }), { status: resendStatus });
+    }
+    if (url.startsWith("https://blob.test/")) {
+      return url.includes("missing") ? new Response("gone", { status: 404 }) : new Response(new Uint8Array(Buffer.from("%PDF old")));
     }
     if (url.startsWith("https://connect.mailerlite.com")) {
       return new Response(JSON.stringify({ data: { id: "ml-1", status: "sent" } }), { status: mailerliteStatus });
@@ -288,5 +291,49 @@ describe("sendAlert", () => {
     expect(resend()[0].body!.to).toEqual(["a@x.com", "b@x.com"]);
     resendStatus = 500;
     await expect(sendAlert("cap", { id: "1", name: "Jane", email: "j@x.com", site_url: "https://x.com" })).resolves.toBeUndefined();
+  });
+});
+
+describe("resendReport", () => {
+  it("re-sends the report email with the earlier PDF attached", async () => {
+    await resendReport({ ...LEAD, name: "Jane Doe" }, "https://blob.test/homepage-fixes/x/your-top-homepage-fixes-jane.pdf");
+    const [mail] = resend();
+    expect(mail.body!.to).toEqual(["jane@example.com"]);
+    expect(mail.body!.subject).toBe("Jane Doe, your homepage fixes are ready");
+    expect(String(mail.body!.html)).toContain("attached to this email");
+    expect(mail.body!.attachments).toEqual([
+      { filename: "your-top-homepage-fixes-jane.pdf", content: Buffer.from("%PDF old").toString("base64") },
+    ]);
+    expect(h.query).not.toHaveBeenCalled(); // records nothing
+  });
+
+  it("sends the link only when the PDF can't be fetched", async () => {
+    await resendReport(LEAD, "https://blob.test/missing.pdf");
+    const [mail] = resend();
+    expect(mail.body!.attachments).toBeUndefined();
+    expect(String(mail.body!.html)).not.toContain("attached to this email");
+  });
+});
+
+describe("deliverFailed", () => {
+  it("sends the couldn't-load note, upserts hf_outcome failed, records failed, alerts once", async () => {
+    await deliverFailed("lead-1", LEAD, "Firecrawl 502");
+    const mails = resend();
+    expect(mails).toHaveLength(2);
+    expect(mails[0].body!.to).toEqual(["jane@example.com"]);
+    expect(mails[0].body!.subject).toBe("Jane, a quick note about your homepage fixes");
+    expect(String(mails[0].body!.text)).toContain("couldn't load your homepage");
+    expect(mails[1].body!.to).toEqual(["danluk1311@gmail.com"]);
+    const [sub] = ml("/subscribers");
+    expect(sub.body!.fields).toMatchObject({ hf_outcome: "failed", pdf_url: "" });
+    expect(lastUpdate()).toMatchObject({ outcome: "failed", error: "Firecrawl 502", status: "failed" });
+  });
+
+  it("still records failed when even the note can't be sent", async () => {
+    resendStatus = 500;
+    mailerliteStatus = 500;
+    await deliverFailed("lead-1", LEAD, "Firecrawl 502");
+    expect(lastUpdate().outcome).toBe("failed");
+    expect(String(lastUpdate().error)).toMatch(/Firecrawl 502[\s\S]*can't-see email also failed/);
   });
 });

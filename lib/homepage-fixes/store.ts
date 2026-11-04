@@ -89,6 +89,94 @@ export async function latestSentFor(
   return rows[0] ?? null;
 }
 
+export type HfLeadRow = {
+  id: string; name: string; email: string; site_url: string; goal: string | null;
+  outcome: HfOutcome | null; retry_count: number; pdf_url: string | null; content: unknown;
+  input_tokens: number | null; output_tokens: number | null; cost_usd: string | null; model: string | null;
+};
+
+export async function getHfLead(id: string): Promise<HfLeadRow | null> {
+  const rows = (await sql()`
+    select id, name, email, site_url, goal, outcome, retry_count, pdf_url, content,
+      input_tokens, output_tokens, cost_usd, model
+    from leads
+    where id = ${id} and report_type = ${REPORT_TYPE}
+  `) as HfLeadRow[];
+  return rows[0] ?? null;
+}
+
+/**
+ * Another homepage-fixes row for this email and site, created before `beforeId` in the last
+ * `withinMinutes` minutes, that is still being built. Only earlier rows count, so of two
+ * simultaneous posts exactly one (the first) goes ahead.
+ */
+export async function recentProcessingFor(
+  email: string, domain: string, withinMinutes: number, beforeId: string,
+): Promise<{ id: string } | null> {
+  const rows = (await sql()`
+    select l.id from leads l, (select created_at, id from leads where id = ${beforeId}) me
+    where l.report_type = ${REPORT_TYPE}
+      and l.outcome = 'processing'
+      and l.id <> me.id
+      and (l.created_at, l.id) < (me.created_at, me.id)
+      and lower(l.email) = ${email.trim().toLowerCase()}
+      and regexp_replace(lower(l.site_url), '^([a-z]+://)?(www\\.)?([^/:?#]+).*$', '\\3') = ${domainOf(domain)}
+      and l.created_at > now() - make_interval(mins => ${withinMinutes})
+    limit 1
+  `) as { id: string }[];
+  return rows[0] ?? null;
+}
+
+/**
+ * Moves a row from one of `from` to `processing` in one statement, so two cron runs (or a cron
+ * and the CLI) can never both pick it up. True when this caller got it.
+ */
+export async function claimHfLead(id: string, from: HfOutcome[]): Promise<boolean> {
+  const rows = (await sql()`
+    update leads set outcome = 'processing', status = 'processing'
+    where id = ${id} and report_type = ${REPORT_TYPE} and outcome = any(${from}::text[])
+    returning id
+  `) as { id: string }[];
+  return rows.length > 0;
+}
+
+/** Retry candidates: rows in `retrying` after one failure, created more than `olderThanMinutes` ago. */
+export async function retryingLeads(olderThanMinutes: number, limit: number): Promise<string[]> {
+  const rows = (await sql()`
+    select id from leads
+    where report_type = ${REPORT_TYPE} and outcome = 'retrying' and retry_count = 1
+      and created_at < now() - make_interval(mins => ${olderThanMinutes})
+    order by created_at asc
+    limit ${limit}
+  `) as { id: string }[];
+  return rows.map((r) => r.id);
+}
+
+/** Queued rows, oldest first. */
+export async function queuedLeads(limit: number): Promise<string[]> {
+  const rows = (await sql()`
+    select id from leads
+    where report_type = ${REPORT_TYPE} and outcome = 'queued'
+    order by created_at asc
+    limit ${limit}
+  `) as { id: string }[];
+  return rows.map((r) => r.id);
+}
+
+/**
+ * Records that today's cap alert went out (app_config key hf_cap_alert_date). True only for the
+ * first caller on a given day, in one statement, so simultaneous posts can't both alert.
+ */
+export async function claimCapAlert(day: string): Promise<boolean> {
+  const rows = (await sql()`
+    insert into app_config (key, value, updated_at) values ('hf_cap_alert_date', ${day}, now())
+    on conflict (key) do update set value = excluded.value, updated_at = now()
+      where app_config.value <> excluded.value
+    returning key
+  `) as { key: string }[];
+  return rows.length > 0;
+}
+
 // ---------- scrape cache ----------
 
 type StoredAsset = { url: string; mime: string };

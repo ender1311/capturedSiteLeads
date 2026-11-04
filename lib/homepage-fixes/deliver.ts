@@ -177,6 +177,53 @@ export async function deliver(leadId: string, lead: DeliverLead, result: Pipelin
   }
 }
 
+const firstWord = (name: string) => name.trim().split(/\s+/)[0] ?? "";
+
+/**
+ * Re-sends a report the photographer already has (a repeat request, or one over the daily limit):
+ * the same report email, the PDF attached when it downloads and fits, MailerLite link-only only
+ * if Resend errors. Records nothing; the caller owns the row. Throws only if no email went out.
+ */
+export async function resendReport(lead: DeliverLead, pdfUrl: string): Promise<void> {
+  let attachment: Attachment | undefined;
+  try {
+    const res = await fetch(pdfUrl);
+    if (res.ok) {
+      const pdf = Buffer.from(await res.arrayBuffer());
+      if (pdf.length > 0 && pdf.length <= MAX_ATTACHMENT_BYTES) {
+        attachment = { filename: pdfFileName(firstWord(lead.name)), content: pdf.toString("base64") };
+      }
+    }
+  } catch (err) {
+    console.warn("Could not fetch the earlier PDF to attach; sending the link only:", (err as Error).message);
+  }
+  await sendToPhotographer(lead, reportEmail(lead.name, pdfUrl, !!attachment), {
+    pdfUrl, attachment, fallback: reportEmail(lead.name, pdfUrl, false),
+  });
+}
+
+/**
+ * The second failure: the photographer gets the "couldn't load" note, MailerLite gets
+ * hf_outcome failed (no PDF), the row becomes `failed`, and Dan gets an alert.
+ * If even the note can't be sent, the row still becomes `failed` with both errors.
+ */
+export async function deliverFailed(leadId: string, lead: DeliverLead, error: string): Promise<void> {
+  const alertLead = { id: leadId, name: lead.name, email: lead.email, site_url: lead.siteUrl };
+  try {
+    await sendToPhotographer(lead, cantSeeEmail(lead.name, "couldnt_load"));
+  } catch (err) {
+    const message = `${error}\nthe can't-see email also failed: ${err instanceof Error ? err.message : String(err)}`;
+    await updateHfLead(leadId, { outcome: "failed", error: message });
+    await sendAlert("failed", { ...alertLead, error: message });
+    return;
+  }
+  await afterSend(leadId, lead, async () => {
+    await upsertSubscriber(lead, "failed");
+    await updateHfLead(leadId, { outcome: "failed", error });
+  });
+  await sendAlert("failed", { ...alertLead, error });
+}
+
 /** Alert email to ALERT_EMAILS (plus Maggie for `held`). Never throws. */
 export async function sendAlert(kind: "held" | "failed" | "cap", lead: AlertLead): Promise<void> {
   const to = (process.env.ALERT_EMAILS || DEFAULT_ALERTS).split(",").map((s) => s.trim()).filter(Boolean);
