@@ -21,7 +21,7 @@ function page(over: Partial<PageData> = {}): PageData {
     rows: [row(1200, LONG)], imgs: [{ src: "https://janedoe.com/a.jpg", w: 1440, h: 800, y: 0, alt: "", kind: "img" }],
     nav: ["Home", "About", "Contact"], navTop: true, navOverPhoto: false, navBg: "rgb(255, 255, 255)", navColor: "rgb(34, 34, 34)",
     logo: null, fonts: { heading: "Lora", headingWeight: "400", body: "Lato" },
-    uppercaseHeadings: false, accent: null, buttons: [], textLength: 2000, sample: "Hello there",
+    uppercaseHeadings: false, accent: null, buttons: [], textLength: 400, sample: "Hello there",
     dismissed: [], frame: true, screenH: 900, ...over,
   };
 }
@@ -103,6 +103,63 @@ describe("sheet", () => {
       ],
     });
     expect(sheetLine(f.sheet, "Testimonials:")).toMatch(/^Testimonials: one found, about three screens down.*Sarah Miller/);
+  });
+
+  it("does not take a section heading after a paragraph for a testimonial name", () => {
+    const f = facts({
+      rows: [
+        row(400, "Hello", { fs: 40 }),
+        row(1600, LONG),
+        row(1900, "Family Sessions", { tag: "h2", fs: 30 }),
+        row(2000, "The Experience", { tag: "h3", fs: 16 }),
+        row(2600, "Relaxed sessions where everyone gets to be themselves and laugh a lot."),
+        row(2700, "Senior Portraits", { tag: "h4", fs: 16 }),
+      ],
+    });
+    expect(sheetLine(f.sheet, "Testimonials:")).toBe("Testimonials: none found on the homepage");
+  });
+
+  it("counts a lone hero link with a menu word as a first screen button (menu at the bottom)", () => {
+    const nav = (x: number, text: string) => row(830, text, { tag: "a", x, href: `https://janedoe.com/${text.toLowerCase()}` });
+    const f = facts({
+      navTop: false,
+      rows: [row(300, "Ready to make memories?", { tag: "h1", fs: 44 }), row(760, "Contact", { tag: "a", href: "https://janedoe.com/contact" }),
+        nav(100, "Home"), nav(200, "About"), nav(300, "Contact"), row(1600, LONG)],
+    });
+    expect(sheetLine(f.sheet, "First screen button:")).toMatch(/^First screen button: "Contact"/);
+  });
+
+  it("checks page.buttons before saying there is no first screen button", () => {
+    const f = facts({
+      rows: [row(300, "Ready to make memories?", { tag: "h1", fs: 44 }), row(1600, LONG)],
+      buttons: [{ text: "Inquire", href: "https://janedoe.com/inquire", y: 600 }],
+    });
+    expect(sheetLine(f.sheet, "First screen button:")).toMatch(/^First screen button: "Inquire".*\/inquire/);
+  });
+
+  it("hedges absences when the capture is partial", () => {
+    const f = facts({
+      textLength: 5000,
+      sample: "Jane Doe\nWedding photographer based in Austin, Texas\nAbout me",
+      rows: [row(300, "Hello there", { tag: "h1", fs: 44 }), row(1600, "Light, laughter and long walks. ".repeat(4))],
+    });
+    const lines = f.sheet.split("\n");
+    expect(lines[0]).toMatch(/^Capture note:/);
+    expect(sheetLine(f.sheet, "Location:")).toBe('Location: yes, "Wedding photographer based in Austin, Texas" (position unknown)');
+    for (const start of ["First screen button:", "Testimonials:", "Instagram block:", "About or intro:"]) {
+      expect(sheetLine(f.sheet, start)).toMatch(/could not be checked/);
+    }
+  });
+
+  it("finds a location only in the meta description", () => {
+    const f = facts({ metaDesc: "Family photographer in Denver, Colorado", rows: [row(300, "Hello there", { fs: 44 }), row(1600, LONG)] });
+    expect(sheetLine(f.sheet, "Location:")).toMatch(/^Location: only in the page's search description/);
+  });
+
+  it("hedges an Instagram or steps absence on a page with little text", () => {
+    const f = facts();
+    expect(sheetLine(f.sheet, "Instagram block:")).toMatch(/no text found for one/);
+    expect(sheetLine(f.sheet, "Steps or process section:")).toMatch(/no text found for one/);
   });
 
   it("detects a testimonial heading", () => {
@@ -205,7 +262,7 @@ describe("fixtures", () => {
 
   it("gabby facts match what Maggie saw", () => {
     expect(gabby.sheet.split("\n")).toContain("First screen button: none");
-    expect(sheetLine(gabby.sheet, "Location:")).toMatch(/^Location: yes, "Gabby J? ?Photography: Alabama Based, Travel Ready"/);
+    expect(sheetLine(gabby.sheet, "Location:")).toMatch(/^Location: yes, "Gabby J Photography: Alabama Based, Travel Ready"/);
     expect(sheetLine(gabby.sheet, "Testimonials:")).toMatch(/Holleigh Colvin/);
     expect(sheetLine(gabby.sheet, "After the last testimonial:")).toMatch(/Instagram/);
     expect(gabby.sheet).toContain("Hi I'm Gabrielle");
@@ -235,7 +292,9 @@ describe("fixtures", () => {
     expect(gabby.mockup.logo_text).toBe("Gabby J Photography");
     expect(gabby.mockup.accent).toBeUndefined(); // light beige: white button text would not read
     expect(wjohns.mockup.nav_position).toBe("top");
-    expect(wjohns.mockup.nav_style).toBe("over");
+    expect(wjohns.mockup.nav_style).toBe("bar");
+    expect(wjohns.mockup.body_font).toBe("Poppins");
+    expect(wjohns.mockup.nav_items).toEqual(["Home", "Portfolio", "About", "Investment", "Contact", "My Favorite Venues"]);
     expect(wjohns.mockup.heading_font).toBe("Manrope");
     expect(wjohns.mockup.logo_text).toBe("William Johns Photography");
   });

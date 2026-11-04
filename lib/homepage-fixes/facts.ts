@@ -187,6 +187,14 @@ export function buildFacts(c: Capture): Facts {
 
   // Blocks and their roles
   const blocks = toBlocks(page);
+  const sampleLines = page.sample.split("\n").map(norm).filter(Boolean);
+  // A glyph set as an image or a dropped span can lose a word from a row ("Gabby Photography"
+  // vs the visible "Gabby J Photography"); prefer the page's own line when it holds the row's words plus more.
+  for (const b of blocks) if (b.y < H) b.text = fromSample(b.text, sampleLines);
+  // Capture coverage: some builders hide text until it scrolls into view.
+  const rowChars = blocks.reduce((sum, b) => sum + b.text.length, 0);
+  const partial = page.textLength > 0 && rowChars < page.textLength * 0.5;
+  const unchecked = "could not be checked, part of the page text could not be read";
   const navKeys = new Set(page.nav.map((n) => key(n)));
   const isNavText = (b: Block) => navKeys.has(key(b.text));
   const homePath = (href?: string) => {
@@ -211,7 +219,9 @@ export function buildFacts(c: Capture): Facts {
     if (b.y >= footerY) return "footer";
     if (/^(\d{1,2}\s*)+$/.test(b.text) || /^\(?required\)?$/i.test(b.text) || /^skip to/i.test(b.text)) return "noise";
     if ((labelCounts.get(key(b.text)) ?? 0) >= 4) return "label";
-    if (b.href && isNavText(b) && (b.y < 180 || (b.y >= H - 180 && b.y < H + 40))) return "nav";
+    // Menu links come in a row; a lone link with a menu word (a hero "Contact" button) is a button.
+    const navRow = blocks.filter((o) => o.href && isNavText(o) && Math.abs(o.y - b.y) <= 6).length >= 2;
+    if (b.href && isNavText(b) && navRow && (b.y < 180 || (b.y >= H - 180 && b.y < H + 40))) return "nav";
     if (b.y < 180 && homePath(b.href)) return "logo";
     return "content";
   });
@@ -226,12 +236,15 @@ export function buildFacts(c: Capture): Facts {
   // Testimonials
   type Testimonial = { y: number; end: number; quote?: Block; name?: Block; heading?: Block };
   const testimonials: Testimonial[] = [];
-  const isName = (b: Block) => !b.href && b.text.length <= 40 && NAME_RE.test(b.text) && !NOT_NAME_RE.test(b.text) && !isNavText(b);
+  // A name line is small (about body size, never bigger than the quote) and is not a section heading.
+  const serviceWord = new RegExp(SERVICE_RE.source, "i");
+  const isName = (b: Block, quote: Block) => !b.href && b.text.length <= 40 && NAME_RE.test(b.text) && !NOT_NAME_RE.test(b.text) &&
+    !isNavText(b) && b.fs <= bodyFs * 1.2 && b.fs <= quote.fs && !serviceWord.test(b.text) && !SERVICES_HEAD_RE.test(b.text) && !/^the\b/i.test(b.text);
   content.forEach((b, i) => {
     if (b.href || b.words < 8) return;
     // The name line comes right after the quote (a lone quote mark may sit between).
     const next = content.slice(i + 1, i + 3).find((n) => n.text.length > 3);
-    const name = next && next.y - b.y <= 500 && isName(next) ? next : undefined;
+    const name = next && next.y - b.y <= 500 && isName(next, b) ? next : undefined;
     if (name) testimonials.push({ y: b.y, end: name.y, quote: b, name });
   });
   for (const b of content) {
@@ -272,7 +285,7 @@ export function buildFacts(c: Capture): Facts {
     const s = href ? c.linkStatus[href] : undefined;
     return typeof s === "number" && s >= 400 ? ", the link is broken" : s === "no response" ? ", the link did not answer" : "";
   };
-  const goes = (b: Block) => `goes to ${hrefPath(b.href ?? "", base).label}${broken(b.href)}`;
+  const goes = (b: { href?: string }) => `goes to ${hrefPath(b.href ?? "", base).label}${broken(b.href)}`;
 
   // Instagram
   const insta = content.find((b) => (INSTAGRAM_RE.test(b.text) || (b.href && /instagram\.com/i.test(b.href))) && b.words <= 12);
@@ -334,8 +347,13 @@ export function buildFacts(c: Capture): Facts {
   L.push(page.nav.length
     ? `Menu: ${page.nav.join(", ")} (${page.navTop ? "top" : "bottom"} of the first screen, ${page.navOverPhoto ? "over the photo" : "on a solid bar"})`
     : "Menu: none found");
-  const heroButton = buttons.find((b) => b.y < H);
-  L.push(heroButton ? `First screen button: ${q(heroButton.text, 40)} (${goes(heroButton)})` : "First screen button: none");
+  const heroButton: { text: string; href?: string } | undefined = buttons.find((b) => b.y < H) ?? page.buttons.find((pb) => {
+    if (pb.y >= H || /^skip to/i.test(pb.text) || SOCIAL_RE.test(pb.href) || (pb.y < 180 && homePath(pb.href))) return false;
+    const navRow = page.buttons.filter((o) => navKeys.has(key(o.text)) && Math.abs(o.y - pb.y) <= 6).length >= 2;
+    return !(navKeys.has(key(pb.text)) && navRow);
+  });
+  L.push(heroButton ? `First screen button: ${q(heroButton.text, 40)} (${goes(heroButton)})`
+    : `First screen button: ${partial ? unchecked : "none"}`);
   const locBlock = blocks.find((b, i) => roles[i] !== "noise" && hasLocation(b.text));
   if (locBlock) {
     const sentence = locBlock.text.length > 160
@@ -343,7 +361,12 @@ export function buildFacts(c: Capture): Facts {
       : locBlock.text;
     const small = locBlock.fs <= bodyFs ? ", small text" : "";
     L.push(`Location: yes, ${q(sentence, 160)} (${where(locBlock.y)}${small})`);
-  } else L.push("Location: not found anywhere on the homepage");
+  } else {
+    const inSample = sampleLines.find((l) => hasLocation(l));
+    if (inSample) L.push(`Location: yes, ${q(inSample, 160)} (position unknown)`);
+    else if (hasLocation(page.metaDesc)) L.push(`Location: only in the page's search description, not seen on the page: ${q(page.metaDesc, 160)}`);
+    else L.push(partial ? `Location: ${unchecked}` : "Location: not found anywhere on the homepage");
+  }
 
   // 2. CTA reinforcement
   const navContact = page.nav.find((n) => CONTACT_RE.test(n));
@@ -365,8 +388,11 @@ export function buildFacts(c: Capture): Facts {
     L.push(n
       ? `Testimonials: ${num(n)} found, ${n > 1 ? "the first " : ""}${where(first.y)} (${quoted.join("; ")})${heading ? `, under ${q(heading.text, 40)}` : ""}`
       : `Testimonials: a ${q(heading!.text, 40)} section ${where(first.y)}`);
-  } else L.push("Testimonials: none found on the homepage");
-  L.push(`Instagram block: ${insta ? `yes, ${where(insta.y)} (${q(insta.text, 60)})` : "none"}`);
+  } else L.push(`Testimonials: ${partial ? unchecked : "none found on the homepage"}`);
+  // An image-only feed or steps graphic leaves no text, so absence is only stated on a page with plenty of text.
+  const wordsOnPage = content.reduce((sum, b) => sum + b.words, 0);
+  const absent = (what: string) => (partial ? unchecked : wordsOnPage >= 300 ? "none found" : `no text found for ${what}, it may be images only`);
+  L.push(`Instagram block: ${insta ? `yes, ${where(insta.y)} (${q(insta.text, 60)})` : absent("one")}`);
   if (testimonials.length) {
     const last = testimonials[testimonials.length - 1];
     const next = content.find((b) => b.y > last.end && !inTestimonial(b) && !(last.heading && b.y - last.end < H * 0.75 && b.words >= 8));
@@ -437,7 +463,7 @@ export function buildFacts(c: Capture): Facts {
       ? `Services summary on the homepage: none as its own section; named only inside paragraphs: ${named.slice(0, 8).join(", ")}`
       : "Services summary on the homepage: none");
   }
-  L.push(`Steps or process section: ${stepsHead ? `yes (${q(stepsHead.text, 40)}), ${where(stepsHead.y)}` : "none found"}`);
+  L.push(`Steps or process section: ${stepsHead ? `yes (${q(stepsHead.text, 40)}), ${where(stepsHead.y)}` : absent("one")}`);
 
   // 7. Skimmability
   L.push(`Page length: about ${num(Math.max(1, Math.round(page.pageHeight / H)))} laptop screen${Math.round(page.pageHeight / H) > 1 ? "s" : ""}`);
@@ -475,12 +501,9 @@ export function buildFacts(c: Capture): Facts {
     L.push(`About or intro, ${where(aboutBlocks[0].y)}, word for word:`);
     for (const b of aboutBlocks) L.push(`  ${clip(b.text, 1200)}`);
     L.push(`About focus: ${num(me)} sentence${me === 1 ? "" : "s"} mostly about the photographer, ${num(them)} mostly about the visitor`);
-  } else L.push("About or intro: none found on the homepage");
+  } else L.push(`About or intro: ${partial ? unchecked : "none found on the homepage"}`);
 
-  // Capture coverage: some builders hide text until it scrolls into view.
-  const rowChars = blocks.reduce((s, b) => s + b.text.length, 0);
-  const partial = page.textLength > 0 && rowChars < page.textLength * 0.5;
-  if (partial) L.push("Capture note: part of the page text could not be measured, so some sections may be missing from these facts; the extra text at the end of the homepage text is from the top of the page, in reading order");
+  if (partial) L.unshift("Capture note: part of the page text could not be measured, so some sections may be missing from these facts; the extra text at the end of the homepage text is from the top of the page, in reading order");
 
   // ---------- trimmed text ----------
   type T = { text: string; keep: boolean };
@@ -547,6 +570,23 @@ export function buildFacts(c: Capture): Facts {
   if (accent && accent[3] > 0.5 && contrast(accent, WHITE) >= 3) mockup.accent = hex(accent);
 
   return { flags, sheet: L.join("\n"), trimmedText, pageText, mockup };
+}
+
+/** The sample (innerText) line that holds all of the row's words in order plus a few more, else the row text. */
+function fromSample(text: string, sampleLines: string[]): string {
+  const want = key(text).split(" ").filter(Boolean);
+  if (!want.length) return text;
+  const rowCaps = text === text.toUpperCase();
+  for (const line of sampleLines) {
+    const have = key(line).split(" ").filter(Boolean);
+    if (have.length <= want.length || have.length > want.length + 3) continue;
+    // innerText applies text-transform; keep the row's own casing unless the row is caps too.
+    if (line === line.toUpperCase() && !rowCaps) continue;
+    let i = 0;
+    for (const w of have) if (w === want[i]) i++;
+    if (i === want.length) return line;
+  }
+  return text;
 }
 
 function mostCommon(xs: string[]): string | undefined {
