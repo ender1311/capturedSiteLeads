@@ -12,6 +12,7 @@
     "check": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
+    "@ai-sdk/google": "4.0.11",
     "@mendable/firecrawl-js": "^4.30.0",
     "@neondatabase/serverless": "^1.1.0",
     "@sparticuz/chromium": "^149.0.0",

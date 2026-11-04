@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { APICallError } from "ai";
 import fs from "node:fs";
 import path from "node:path";
 import { MockLanguageModelV3 } from "ai/test";
 import { SYSTEM_PROMPT, userMessage } from "./prompt";
-import { addUsage, costOf, lookCheck, repairFields, writeReport, WrittenIncompleteError } from "./write";
+import { addUsage, costOf, lookCheck, rateLimit, repairFields, writeReport, WrittenIncompleteError } from "./write";
+import { resolveModel } from "./model";
 import type { Facts } from "./facts";
 import type { ReportContent } from "./types";
 
@@ -369,5 +371,143 @@ describe("cost helpers", () => {
   it("adds usage", () => {
     expect(addUsage({ inputTokens: 1, outputTokens: 2, costUsd: 0.1, calls: 1 }, { inputTokens: 3, outputTokens: 4, costUsd: 0.2, calls: 2 }))
       .toEqual({ inputTokens: 4, outputTokens: 6, costUsd: expect.closeTo(0.3, 9), calls: 3 });
+  });
+});
+
+describe("resolveModel", () => {
+  const saved = process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    else process.env.GOOGLE_GENERATIVE_AI_API_KEY = saved;
+  });
+
+  it("uses the Google key for google/ ids when it is set", () => {
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "test-key";
+    const m = resolveModel("google/gemini-3.8-flash");
+    expect(typeof m).toBe("object");
+    expect((m as { modelId: string }).modelId).toBe("gemini-3.8-flash");
+    expect((m as { provider: string }).provider).toMatch(/^google/);
+  });
+
+  it("falls back to the gateway id without the key, or for other providers", () => {
+    delete process.env.GOOGLE_GENERATIVE_AI_API_KEY;
+    expect(resolveModel("google/gemini-3.8-flash")).toBe("google/gemini-3.8-flash");
+    process.env.GOOGLE_GENERATIVE_AI_API_KEY = "test-key";
+    expect(resolveModel("anthropic/claude-sonnet-5")).toBe("anthropic/claude-sonnet-5");
+  });
+
+  it("passes a model object through", () => {
+    const m = mock({ json: {} });
+    expect(resolveModel(m)).toBe(m);
+  });
+});
+
+describe("usage from a Google-style response", () => {
+  it("prices a bare Google model id and counts thinking as output", async () => {
+    expect(costOf({ inputTokens: 1_000_000, outputTokens: 0 }, "gemini-3.8-flash")).toBeCloseTo(0.75, 9);
+    const m = new MockLanguageModelV3({
+      modelId: "gemini-3.8-flash",
+      doGenerate: async () => ({
+        content: [{ type: "text", text: JSON.stringify({ faces_ok: true, headline_readable: true, looks_like_template: false }) }],
+        finishReason: { unified: "stop", raw: undefined },
+        usage: {
+          inputTokens: { total: 1000, noCache: 1000, cacheRead: undefined, cacheWrite: undefined },
+          outputTokens: { total: 300, text: 40, reasoning: 260 },
+        },
+        warnings: [],
+      }),
+    });
+    const { usage } = await lookCheck(Buffer.from([1]), m);
+    expect(usage.outputTokens).toBe(300);
+    expect(usage.costUsd).toBeCloseTo(costOf({ inputTokens: 1000, outputTokens: 300 }, MODEL), 12);
+  });
+});
+
+describe("rate limits", () => {
+  const ok = { faces_ok: true, headline_readable: true, looks_like_template: false };
+  const err429 = (headers: Record<string, string> = {}, body = "") => new APICallError({
+    message: "Resource has been exhausted", url: "https://x", requestBodyValues: {}, statusCode: 429,
+    responseHeaders: headers, responseBody: body, isRetryable: true,
+  });
+  function flaky(errors: unknown[]) {
+    let i = 0;
+    return new MockLanguageModelV3({
+      modelId: MODEL,
+      doGenerate: async () => {
+        if (i < errors.length) throw errors[i++];
+        return {
+          content: [{ type: "text", text: JSON.stringify(ok) }],
+          finishReason: { unified: "stop", raw: undefined },
+          usage: {
+            inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 5, text: 5, reasoning: undefined },
+          },
+          warnings: [],
+        };
+      },
+    });
+  }
+  afterEach(() => vi.restoreAllMocks());
+
+  it("waits retry-after and retries once", async () => {
+    const sleep = vi.spyOn(rateLimit, "sleep").mockResolvedValue();
+    const m = flaky([err429({ "retry-after": "7" })]);
+    const r = await lookCheck(Buffer.from([1]), m);
+    expect(r.ok).toBe(true);
+    expect(sleep).toHaveBeenCalledWith(7000);
+    expect(m.doGenerateCalls).toHaveLength(2);
+  });
+
+  it("reads Google's retryDelay from the body, else waits 5 s", async () => {
+    const sleep = vi.spyOn(rateLimit, "sleep").mockResolvedValue();
+    await lookCheck(Buffer.from([1]), flaky([err429({}, '{"error":{"status":"RESOURCE_EXHAUSTED","details":[{"retryDelay": "12s"}]}}')]));
+    expect(sleep).toHaveBeenLastCalledWith(12000);
+    await lookCheck(Buffer.from([1]), flaky([err429()]));
+    expect(sleep).toHaveBeenLastCalledWith(5000);
+  });
+
+  it("throws after a second 429", async () => {
+    vi.spyOn(rateLimit, "sleep").mockResolvedValue();
+    const m = flaky([err429(), err429()]);
+    await expect(lookCheck(Buffer.from([1]), m)).rejects.toThrow("exhausted");
+    expect(m.doGenerateCalls).toHaveLength(2);
+  });
+
+  it("treats 503 high demand like a rate limit", async () => {
+    const sleep = vi.spyOn(rateLimit, "sleep").mockResolvedValue();
+    const e503 = new APICallError({ message: "This model is currently experiencing high demand.", url: "https://x", requestBodyValues: {}, statusCode: 503, isRetryable: true });
+    const m = flaky([e503]);
+    expect((await lookCheck(Buffer.from([1]), m)).ok).toBe(true);
+    expect(sleep).toHaveBeenCalledWith(5000);
+    expect(m.doGenerateCalls).toHaveLength(2);
+  });
+
+  it("does not wait or retry on other errors", async () => {
+    const sleep = vi.spyOn(rateLimit, "sleep").mockResolvedValue();
+    const e500 = new APICallError({ message: "boom", url: "https://x", requestBodyValues: {}, statusCode: 500, isRetryable: true });
+    const m = flaky([e500]);
+    await expect(lookCheck(Buffer.from([1]), m)).rejects.toThrow("boom");
+    expect(sleep).not.toHaveBeenCalled();
+    expect(m.doGenerateCalls).toHaveLength(1);
+  });
+
+  it("covers the main call too", async () => {
+    vi.spyOn(rateLimit, "sleep").mockResolvedValue();
+    let i = 0;
+    const m = new MockLanguageModelV3({
+      modelId: MODEL,
+      doGenerate: async () => {
+        if (i++ === 0) throw err429();
+        return {
+          content: [{ type: "text", text: JSON.stringify({ fit: "hobby", compliment: "Nice." }) }],
+          finishReason: { unified: "stop", raw: undefined },
+          usage: { inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: 1, reasoning: undefined } },
+          warnings: [],
+        };
+      },
+    });
+    const { written, usage } = await writeReport({ firstName: "J", website: "j.com", goal: "", facts, photoCount: 1, contactSheet: Buffer.from([1]), model: m });
+    expect(written.fit).toBe("hobby");
+    expect(usage.calls).toBe(1);
   });
 });

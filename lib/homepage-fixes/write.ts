@@ -1,7 +1,8 @@
-import { generateObject, NoObjectGeneratedError, type LanguageModel } from "ai";
+import { APICallError, generateObject, NoObjectGeneratedError, type LanguageModel } from "ai";
 import { z } from "zod";
 import { DEFAULT_MODEL, MODEL_OPTIONS } from "@/lib/models";
 import type { Facts } from "./facts";
+import { resolveModel } from "./model";
 import { clampPhotos, SYSTEM_PROMPT, userMessage } from "./prompt";
 import { fieldsOf, LIMITS, type RuleIssue } from "./rules";
 import type { Fix, Layout, ReportContent, Usage } from "./types";
@@ -90,8 +91,8 @@ export function toWritten(o: Wire): Written {
 
 // Lowest-cost Gemini settings, passed through by the AI Gateway to Google. Gemini counts thinking
 // against maxOutputTokens. Google advises Gemini 3 at the default temperature, so none is set.
-// NOT YET CONFIRMED LIVE: on 2026-11-03 the gateway refused the model ("Free tier users do not have
-// access to this model"). If a thinkingLevel is rejected, try "minimal", then omit it.
+// The same providerOptions.google shape works for the AI Gateway and for @ai-sdk/google
+// (per-call mediaResolution and thinkingConfig.thinkingLevel are in its option types).
 type ThinkingLevel = "low" | "minimal";
 const providerOptions = (thinkingLevel: ThinkingLevel) => ({
   google: { mediaResolution: "MEDIA_RESOLUTION_LOW", thinkingConfig: { thinkingLevel } },
@@ -100,8 +101,10 @@ const providerOptions = (thinkingLevel: ThinkingLevel) => ({
 type ModelArg = string | Exclude<LanguageModel, string>;
 const modelId = (m: ModelArg) => (typeof m === "string" ? m : m.modelId);
 
+// costUsd is always the list-price estimate (or the gateway's reported cost), even when Dan's
+// free-tier Google key bills $0, so cost tracking and the 1-cent budget stay meaningful.
 export function costOf(u: { inputTokens: number; outputTokens: number }, model: string): number {
-  const m = MODEL_OPTIONS.find((o) => o.id === model) ?? MODEL_OPTIONS.find((o) => o.id === DEFAULT_MODEL)!;
+  const m = MODEL_OPTIONS.find((o) => o.id === model || o.id === `google/${model}`) ?? MODEL_OPTIONS.find((o) => o.id === DEFAULT_MODEL)!;
   return u.inputTokens * m.inputPerToken + u.outputTokens * m.outputPerToken;
 }
 
@@ -117,14 +120,57 @@ export function addUsage(a: Usage, b: Usage): Usage {
 const ZERO: Usage = { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 };
 
 function usageOf(
-  r: { usage?: { inputTokens?: number; outputTokens?: number }; providerMetadata?: Record<string, Record<string, unknown>> },
+  r: {
+    usage?: { inputTokens?: number; outputTokens?: number; outputTokenDetails?: { textTokens?: number; reasoningTokens?: number } };
+    providerMetadata?: Record<string, Record<string, unknown>>;
+  },
   model: ModelArg,
 ): Usage {
   const inputTokens = r.usage?.inputTokens ?? 0;
-  const outputTokens = r.usage?.outputTokens ?? 0;
+  // Thinking is billed as output. Providers report outputTokens with it included; if one reports
+  // text and reasoning separately with a smaller total, count both.
+  const d = r.usage?.outputTokenDetails;
+  const outputTokens = Math.max(r.usage?.outputTokens ?? 0, (d?.textTokens ?? 0) + (d?.reasoningTokens ?? 0));
   const gatewayCost = Number(r.providerMetadata?.gateway?.cost);
   const costUsd = Number.isFinite(gatewayCost) && gatewayCost > 0 ? gatewayCost : costOf({ inputTokens, outputTokens }, modelId(model));
   return { inputTokens, outputTokens, costUsd, calls: 1 };
+}
+
+// Free-tier rate limits answer 429 / RESOURCE_EXHAUSTED, and overload answers 503 / UNAVAILABLE
+// ("high demand"): wait the advised delay (or 5 s) and try once more; anything else is thrown for the pipeline's retry cron. The SDK's own retries are off.
+export const rateLimit = { sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), defaultMs: 5000, maxMs: 60000 };
+
+const TRANSIENT = /RESOURCE_EXHAUSTED|UNAVAILABLE/;
+
+function rateLimitDelay(e: unknown): number | null {
+  if (!APICallError.isInstance(e)) {
+    const status = (e as { statusCode?: number } | null)?.statusCode;
+    const msg = e instanceof Error ? e.message : "";
+    if (status !== 429 && status !== 503 && !TRANSIENT.test(msg)) return null;
+    return rateLimit.defaultMs;
+  }
+  if (e.statusCode !== 429 && e.statusCode !== 503 && !TRANSIENT.test(`${e.message} ${e.responseBody ?? ""}`)) return null;
+  const h = e.responseHeaders ?? {};
+  let ms: number | undefined;
+  if (h["retry-after-ms"]) ms = parseFloat(h["retry-after-ms"]);
+  else if (h["retry-after"]) ms = parseFloat(h["retry-after"]) * 1000;
+  else {
+    const m = (e.responseBody ?? "").match(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/);
+    if (m) ms = parseFloat(m[1]) * 1000;
+  }
+  if (ms === undefined || !Number.isFinite(ms) || ms < 0) ms = rateLimit.defaultMs;
+  return Math.min(ms, rateLimit.maxMs);
+}
+
+async function withRateLimitRetry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    const ms = rateLimitDelay(e);
+    if (ms === null) throw e;
+    await rateLimit.sleep(ms);
+    return fn();
+  }
 }
 
 // A failed attempt still costs money: carry its usage so the retry can add it.
@@ -142,8 +188,9 @@ export async function writeReport(input: {
   const attempt = async (thinkingLevel: ThinkingLevel) => {
     let r;
     try {
-      r = await generateObject({
-        model,
+      r = await withRateLimitRetry(() => generateObject({
+        model: resolveModel(model),
+        maxRetries: 0,
         schema: wireSchema(photoCount),
         system: SYSTEM_PROMPT,
         messages: [{
@@ -155,7 +202,7 @@ export async function writeReport(input: {
         }],
         maxOutputTokens: 2000,
         providerOptions: providerOptions(thinkingLevel),
-      });
+      }));
     } catch (e) {
       if (NoObjectGeneratedError.isInstance(e)) throw new AttemptError(e, usageOf({ usage: e.usage }, model));
       throw e;
@@ -230,14 +277,15 @@ export async function repairFields(input: {
   }).join("\n\n");
 
   const model = input.model ?? DEFAULT_MODEL;
-  const r = await generateObject({
-    model,
+  const r = await withRateLimitRetry(() => generateObject({
+    model: resolveModel(model),
+    maxRetries: 0,
     schema: repairSchema,
     system: REPAIR_SYSTEM,
     prompt: list,
     maxOutputTokens: 1500,
     providerOptions: providerOptions("minimal"),
-  });
+  }));
 
   const content = structuredClone(input.content);
   for (const f of r.object.fields) {
@@ -258,8 +306,9 @@ looks_like_template: Does it look like a generic template rather than the photog
 export async function lookCheck(after: Buffer, model: ModelArg = DEFAULT_MODEL): Promise<{
   ok: boolean; faces_ok: boolean; headline_readable: boolean; looks_like_template: boolean; usage: Usage;
 }> {
-  const r = await generateObject({
-    model,
+  const r = await withRateLimitRetry(() => generateObject({
+    model: resolveModel(model),
+    maxRetries: 0,
     schema: lookSchema,
     messages: [{
       role: "user",
@@ -270,7 +319,7 @@ export async function lookCheck(after: Buffer, model: ModelArg = DEFAULT_MODEL):
     }],
     maxOutputTokens: 1000,
     providerOptions: providerOptions("minimal"),
-  });
+  }));
   const o = r.object;
   return { ...o, ok: o.faces_ok && o.headline_readable && !o.looks_like_template, usage: usageOf(r, model) };
 }
