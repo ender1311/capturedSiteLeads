@@ -6,9 +6,13 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
+    "@ai-sdk/google": "4.0.11",
     "@mendable/firecrawl-js": "^4.30.0",
     "@neondatabase/serverless": "^1.1.0",
     "@sparticuz/chromium": "^149.0.0",
@@ -29,6 +33,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.10",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^3.2.7"
   }
 }

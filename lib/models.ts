@@ -1,8 +1,8 @@
 // Curated models for report copywriting, priced from the AI Gateway catalog
-// (per-token USD). Cost estimates assume the measured ~5,500 input +
-// ~1,000 output tokens per report.
+// (per-token USD). Cost estimates assume ~5,600 input + ~1,500 output tokens
+// per report (homepage fixes: main call, repair and look check).
 
-export const DEFAULT_MODEL = "google/gemini-2.5-flash-lite";
+export const DEFAULT_MODEL = "google/gemini-3.8-flash";
 
 export type ModelOption = {
   id: string;
@@ -14,8 +14,22 @@ export type ModelOption = {
 
 export const MODEL_OPTIONS: ModelOption[] = [
   {
+    id: "google/gemini-3.8-flash",
+    label: "Gemini 3.8 Flash (default)",
+    description: "Best balance for these reports: reads the screenshot well and writes in Maggie's voice. About 1 cent per report.",
+    inputPerToken: 0.00000075,
+    outputPerToken: 0.00000375,
+  },
+  {
+    id: "google/gemini-3.5-flash-lite",
+    label: "Gemini 3.5 Flash-Lite (cheaper)",
+    description: "About half the cost, but a weaker writer. Use only if cost matters more than copy quality.",
+    inputPerToken: 0.0000003,
+    outputPerToken: 0.0000025,
+  },
+  {
     id: "google/gemini-2.5-flash-lite",
-    label: "Gemini 2.5 Flash-Lite — Budget (default)",
+    label: "Gemini 2.5 Flash-Lite — Budget",
     description: "Fast and dirt cheap. Solid copy; the price makes volume a non-issue.",
     inputPerToken: 0.0000001,
     outputPerToken: 0.0000004,
@@ -43,8 +57,20 @@ export const MODEL_OPTIONS: ModelOption[] = [
   },
 ];
 
-export const TOKENS_PER_REPORT = { input: 5500, output: 1000 };
+export const TOKENS_PER_REPORT = { input: 5600, output: 1500 };
 
 export function costPerReport(m: ModelOption): number {
   return TOKENS_PER_REPORT.input * m.inputPerToken + TOKENS_PER_REPORT.output * m.outputPerToken;
+}
+
+/**
+ * The model reports are written with: the live setting saved from the admin, else LLM_MODEL,
+ * else the default. Only ids in MODEL_OPTIONS count, so a stale or mistyped setting can't break
+ * the pipeline or its cost numbers.
+ */
+export function pickModel(live: string | null | undefined, env: string | null | undefined): string {
+  const known = (id: string | null | undefined) => !!id && MODEL_OPTIONS.some((m) => m.id === id.trim());
+  if (known(live)) return live!.trim();
+  if (known(env)) return env!.trim();
+  return DEFAULT_MODEL;
 }

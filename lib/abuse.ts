@@ -76,43 +76,73 @@ export function unsafeUrlReason(siteUrl: string): string | null {
   return null;
 }
 
+export type ReportType = "roadmap" | "homepage_fixes";
+
 export type RateCheck =
   | { allowed: true }
-  | { allowed: false; reason: string };
+  | { allowed: false; kind: "email" | "ip" | "cap"; reason: string };
 
-// Counts today's attempts (including the row just inserted for this request,
-// and including previously rejected attempts) in a single query.
-export async function checkDailyLimits(input: {
-  email: string;
-  ip: string | null;
-}): Promise<RateCheck> {
+// Each report type has its own allowance, so roadmap and homepage-fixes leads never share one.
+export function dailyCap(reportType: ReportType): number {
+  return reportType === "homepage_fixes"
+    ? Number(process.env.HOMEPAGE_FIXES_DAILY_CAP) || 100
+    : Number(process.env.LEAD_DAILY_CAP) || 50;
+}
+
+// Homepage-fixes rows that never build a report (waiting in the queue, refused, or turned away)
+// don't use up the service cap; otherwise the queue could never drain. Every roadmap row counts.
+const NO_BUILD = new Set(["queued", "invalid", "limited"]);
+type LimitRow = { email: string | null; ip: string | null; outcome: string | null };
+const usesCap = (reportType: ReportType, r: LimitRow) =>
+  reportType === "roadmap" || !NO_BUILD.has(r.outcome ?? "");
+
+async function todaysRows(reportType: ReportType): Promise<LimitRow[]> {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  let rows: { email: string | null; ip: string | null }[];
   try {
-    rows = (await sql()`
-      select email, ip from leads where created_at > ${since} limit 2000
-    `) as { email: string | null; ip: string | null }[];
+    return (await sql()`
+      select email, ip, outcome from leads
+      where report_type = ${reportType} and created_at > ${since}
+      limit 2000
+    `) as LimitRow[];
   } catch (e) {
     throw new Error(`Rate-limit lookup failed: ${(e as Error).message}`);
   }
+}
 
-  const cap = Number(process.env.LEAD_DAILY_CAP) || 50;
-  if (rows.length > cap) {
-    return { allowed: false, reason: `daily service cap reached (${cap}/day)` };
-  }
+// Counts the last 24 hours of this report type's attempts (including the row just inserted for
+// this request, and including previously rejected attempts) in a single query. The per-email and
+// per-IP limits are checked before the service cap, so a person over their own limit is told so
+// even on a busy day.
+export async function checkDailyLimits(input: {
+  email: string;
+  ip: string | null;
+  reportType: ReportType;
+}): Promise<RateCheck> {
+  const rows = await todaysRows(input.reportType);
 
   const key = emailLimitKey(input.email);
   const emailCount = rows.filter((r) => r.email && emailLimitKey(r.email) === key).length;
   if (emailCount > DAILY_LIMIT_PER_KEY) {
-    return { allowed: false, reason: `email limit reached (${DAILY_LIMIT_PER_KEY}/day)` };
+    return { allowed: false, kind: "email", reason: `email limit reached (${DAILY_LIMIT_PER_KEY}/day)` };
   }
 
   if (input.ip) {
     const ipCount = rows.filter((r) => r.ip === input.ip).length;
     if (ipCount > DAILY_LIMIT_PER_KEY) {
-      return { allowed: false, reason: `IP limit reached (${DAILY_LIMIT_PER_KEY}/day)` };
+      return { allowed: false, kind: "ip", reason: `IP limit reached (${DAILY_LIMIT_PER_KEY}/day)` };
     }
   }
 
+  const cap = dailyCap(input.reportType);
+  if (rows.filter((r) => usesCap(input.reportType, r)).length > cap) {
+    return { allowed: false, kind: "cap", reason: `daily service cap reached (${cap}/day)` };
+  }
+
   return { allowed: true };
+}
+
+/** How many more reports of this type the last 24 hours' cap allows (the queue cron's budget). */
+export async function capRemaining(reportType: ReportType): Promise<number> {
+  const rows = await todaysRows(reportType);
+  return Math.max(0, dailyCap(reportType) - rows.filter((r) => usesCap(reportType, r)).length);
 }

@@ -2,7 +2,9 @@
 
 Next.js app on Vercel that turns website-redesign form submissions into personalized AI redesign proposal PDFs and a nurture email sequence.
 
-**Flow:** WordPress form → `POST /api/lead` → Firecrawl scrape → LLM report (Vercel AI Gateway) → PDF (puppeteer + chromium) → Vercel Blob → MailerLite sequence → Neon Postgres → `/dashboard`.
+**Flow:** WordPress "Your Top Homepage Fixes" form → `POST /api/homepage-fixes` (or `/api/lead`, same handler) → Firecrawl scrape → Gemini report (`google/gemini-3.8-flash`) → PDF (puppeteer + chromium) → Vercel Blob → email via Resend with the PDF attached → MailerLite subscriber upsert (nurture automation) → Neon Postgres. Reports and stats are viewed in the Beacon Frontier admin: https://beaconfrontier.com/admin/site/capturedsites.
+
+Going live: see [docs/homepage-fixes-go-live.md](./docs/homepage-fixes-go-live.md). Design: [docs/superpowers/specs/2026-11-03-homepage-fixes-design.md](./docs/superpowers/specs/2026-11-03-homepage-fixes-design.md).
 
 See [SPEC.md](./SPEC.md) for the full plan, costs, and API contracts.
 
@@ -46,6 +48,12 @@ For local PDF generation, set `PUPPETEER_EXECUTABLE_PATH` to a local Chrome bina
 
 | Route | Purpose |
 |---|---|
-| `POST /api/lead` | Lead intake pipeline (secured by `x-lead-secret`) |
-| `POST /api/webhook/mailerlite` | Email open/click engagement events |
-| `GET /dashboard` | Leads table + open/click rates |
+| `POST /api/lead` | Lead intake (secured by `?secret=` or `x-lead-secret`); same handler as `/api/homepage-fixes` |
+| `POST /api/homepage-fixes` | Homepage Fixes intake from the Elementor webhook |
+| `GET /api/homepage-fixes/check` | On-page site check used by `homepage-fixes-check.js` (answers within 3 s) |
+| `GET /api/cron/homepage-fixes` | Cron: retries and housekeeping (secured by `CRON_SECRET`) |
+| `GET /api/metrics/v1` | Daily product metrics pulled by beacon-frontier (`PRODUCT_TOKEN_CAPTUREDSITES`) |
+| `/api/admin/*` | Admin data for the Beacon Frontier admin: `leads`, `leads/[id]`, `leads/[id]/resend`, `model`, `email-setup` (`LEADS_API_TOKEN`) |
+| `POST /api/webhook/resend` | Email open/click events from Resend (`RESEND_WEBHOOK_SECRET`) |
+| `POST /api/webhook/mailerlite` | Email open/click events from MailerLite |
+| `GET /dashboard` | 308 redirect to https://beaconfrontier.com/admin/site/capturedsites |
