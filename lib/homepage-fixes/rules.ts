@@ -50,7 +50,7 @@ export function fieldsOf(c: ReportContent): [string, string][] {
 
 const straighten = (t: string) => t.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
 
-function fixText(t: string): string {
+export function fixText(t: string): string {
   return straighten(t)
     .replace(/\s*[—–]\s*/g, ", ")
     .replace(/(,\s*)+,/g, ",")
@@ -81,36 +81,39 @@ const normalize = (t: string) =>
   straighten(t).toLowerCase().replace(/\s*[—–-]\s*|\s*,\s*/g, ", ").replace(/\s+/g, " ").trim();
 const normalizeQuote = (t: string) => normalize(t).replace(/[\s.,!?;:]+$/, "");
 
-export function checkContent(c: ReportContent, pageText: string): RuleIssue[] {
+/** The hard-rule checks for one piece of copy (used for every report field and the hobby compliment). */
+export function checkText(label: string, t: string, max: number | undefined, pageText: string): RuleIssue[] {
   const issues: RuleIssue[] = [];
   const err = (field: string, message: string) => issues.push({ field, level: "error", message });
   const warn = (field: string, message: string) => issues.push({ field, level: "warning", message });
   const page = normalize(pageText);
 
-  for (const [label, t, max] of entries(c)) {
-    if (max && t.length > max) err(label, `is ${t.length} characters (limit ${max}, it has to fit the page).`);
-    if (DASH.test(t)) err(label, "has a dash (— or –). Use a comma, period or colon.");
-    if (BRACKET.test(t)) err(label, "has a bracket or fill-in. Never print a placeholder.");
-    if (PRICE.test(t)) warn(label, "mentions a price. Never recommend adding pricing; one price point at most.");
-    const banned = t.match(BANNED);
-    if (banned) err(label, `uses a banned word ("${banned[0]}").`);
-    if (EMAIL_ADVICE.test(t)) err(label, "email or freebie advice doesn't belong in this report.");
-    if (PRONOUN.test(t)) warn(label, 'says she/her. If that\'s the visitor, write "the visitor" with they/their.');
-    if (TECH_NUMBER.test(t)) err(label, 'has a technical number. Say "twice as large" or "a long way down the page" instead.');
-    if (EXCLAIM.test(t)) warn(label, "has an exclamation point (only keep it if it's their own words in quotes).");
+  if (max && t.length > max) err(label, `is ${t.length} characters (limit ${max}, it has to fit the page).`);
+  if (DASH.test(t)) err(label, "has a dash (— or –). Use a comma, period or colon.");
+  if (BRACKET.test(t)) err(label, "has a bracket or fill-in. Never print a placeholder.");
+  if (PRICE.test(t)) warn(label, "mentions a price. Never recommend adding pricing; one price point at most.");
+  const banned = t.match(BANNED);
+  if (banned) err(label, `uses a banned word ("${banned[0]}").`);
+  if (EMAIL_ADVICE.test(t)) err(label, "email or freebie advice doesn't belong in this report.");
+  if (PRONOUN.test(t)) warn(label, 'says she/her. If that\'s the visitor, write "the visitor" with they/their.');
+  if (TECH_NUMBER.test(t)) err(label, 'has a technical number. Say "twice as large" or "a long way down the page" instead.');
+  if (EXCLAIM.test(t)) warn(label, "has an exclamation point (only keep it if it's their own words in quotes).");
 
-    if (WHOLE_SITE.test(t)) err(label, 'The fixes cover the homepage only. Remove "whole site" language.');
+  if (WHOLE_SITE.test(t)) err(label, 'The fixes cover the homepage only. Remove "whole site" language.');
 
-    for (const m of t.matchAll(/captured sites/gi)) {
-      if (m[0] !== "Captured Sites") err(label, `spells Captured Sites as "${m[0]}". Use exactly "Captured Sites".`);
-    }
+  for (const m of t.matchAll(/captured sites/gi)) {
+    if (m[0] !== "Captured Sites") err(label, `spells Captured Sites as "${m[0]}". Use exactly "Captured Sites".`);
+  }
 
-    for (const m of straighten(t).matchAll(/"([^"]+)"/g)) {
-      const q = normalizeQuote(m[1]);
-      if (q.split(" ").filter(Boolean).length < 3) continue;
-      if (!page.includes(q)) err(label, `quote "${m[1]}" was not found on the homepage text. Never invent quotes.`);
-    }
+  for (const m of straighten(t).matchAll(/"([^"]+)"/g)) {
+    const q = normalizeQuote(m[1]);
+    if (q.split(" ").filter(Boolean).length < 3) continue;
+    if (!page.includes(q)) err(label, `quote "${m[1]}" was not found on the homepage text. Never invent quotes.`);
   }
 
   return issues;
+}
+
+export function checkContent(c: ReportContent, pageText: string): RuleIssue[] {
+  return entries(c).flatMap(([label, t, max]) => checkText(label, t, max, pageText));
 }

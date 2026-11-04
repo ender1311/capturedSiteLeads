@@ -1,9 +1,9 @@
 import { DEFAULT_MODEL } from "@/lib/models";
-import { captureSite, CaptureError } from "./capture";
+import { captureSite, CaptureError, imageMime } from "./capture";
 import { buildFacts, type Facts } from "./facts";
-import { renderAfter, renderContactSheet, renderPdf } from "./render";
+import { renderAfter, renderContactSheet, renderPdf, withBrowser } from "./render";
 import { fillReport } from "./render-html";
-import { autoFix, checkContent, fieldsOf, type RuleIssue } from "./rules";
+import { autoFix, checkContent, checkText, fieldsOf, fixText, type RuleIssue } from "./rules";
 import type { Asset, Capture, FirstSection, FitFlag, ReportContent, Usage } from "./types";
 import { addUsage, lookCheck, repairFields, writeReport, type Written } from "./write";
 
@@ -31,10 +31,41 @@ const REAL: Stages = {
 // left, so delivery (Blob uploads, Resend, MailerLite, the row update) still fits.
 export const DEFAULT_DEADLINE_MS = 270_000;
 const MIN_LEFT_MS = 120_000;
+// The Gemini write call is never optional, so it only starts (and only re-tries) with room for one
+// attempt (40 s abort) plus what always follows it: the mockup render, the first look check and
+// the PDF render (about 50 s together). Delivery runs in the 30 s between the 270 s budget and the
+// route's 300 s maxDuration. Under this, the run throws OutOfTimeError and the lead is retried with
+// a full budget instead of being killed mid-run.
+export const WRITE_MIN_MS = 90_000;
+// The hobby email's sentence when the model's compliment breaks a hard rule.
+export const FALLBACK_COMPLIMENT = "Thanks so much for sharing your site with me.";
+
+/** Not enough time left to finish safely: a plain (retryable) error, so the lead goes to retrying. */
+export class OutOfTimeError extends Error {
+  constructor(step: string) {
+    super(`out of time before ${step}; retrying with a full budget`);
+    this.name = "OutOfTimeError";
+  }
+}
 const NEXT_PHOTO_FOCUS = "50% 40%";
 
 const ZERO: Usage = { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 };
 const dataUri = (a: Asset) => `data:${a.mime};base64,${a.data.toString("base64")}`;
+
+/** Re-checks every asset's type (a cached capture keeps what was stored): bad ones are re-sniffed or dropped. */
+function cleanAssets(c: Capture): Capture {
+  const clean = <T extends Asset>(a: T): T | null => {
+    const mime = imageMime(a.mime, a.data);
+    return mime ? { ...a, mime } : null;
+  };
+  const before = clean(c.before);
+  if (!before) throw new CaptureError("empty", "The screenshot is not an image");
+  return {
+    ...c, before,
+    logo: c.logo ? clean(c.logo) : null,
+    photos: c.photos.map(clean).filter((p): p is Capture["photos"][number] => p !== null),
+  };
+}
 const ext = (mime: string) => (/png/.test(mime) ? "png" : /webp/.test(mime) ? "webp" : /gif/.test(mime) ? "gif" : /avif/.test(mime) ? "avif" : "jpg");
 /** The key a photo goes by in content.json, the skill's convention: photos/photo-01.jpg. */
 export const photoKey = (index: number, mime: string) => `photos/photo-${String(index + 1).padStart(2, "0")}.${ext(mime)}`;
@@ -85,20 +116,31 @@ export function overflowIssues(c: ReportContent, overflow: { page: number; hits:
   return out;
 }
 
-export async function runHomepageFixes(
-  input: { firstName: string; website: string; goal: string; model?: string; capture?: Capture; deadlineMs?: number },
-  stages: Partial<Stages> = {},
-): Promise<PipelineResult> {
+type RunInput = {
+  firstName: string; website: string; goal: string; model?: string; capture?: Capture; deadlineMs?: number;
+  /** The lead still has a retry left: an optional step's time cutoff retries instead of holding. */
+  canRetry?: boolean;
+};
+
+/** One report run; every render in it shares one Chromium, closed when the run ends. */
+export function runHomepageFixes(input: RunInput, stages: Partial<Stages> = {}): Promise<PipelineResult> {
+  return withBrowser(() => run(input, stages));
+}
+
+async function run(input: RunInput, stages: Partial<Stages>): Promise<PipelineResult> {
   const s: Stages = { ...REAL, ...stages };
   const deadline = s.now() + (input.deadlineMs ?? DEFAULT_DEADLINE_MS);
   const hasTime = () => deadline - s.now() >= MIN_LEFT_MS;
+  const ensureWriteTime = (step: string) => {
+    if (deadline - s.now() < WRITE_MIN_MS) throw new OutOfTimeError(step);
+  };
   const model = input.model ?? DEFAULT_MODEL;
   let usage: Usage = { ...ZERO };
 
   // 1. Capture (one Firecrawl scrape), unless the caller already has it.
   let capture: Capture;
   try {
-    capture = input.capture ?? (await s.capture(input.website));
+    capture = cleanAssets(input.capture ?? (await s.capture(input.website)));
   } catch (e) {
     if (e instanceof CaptureError) return { outcome: "cant_see", reason: e.kind, usage };
     throw e;
@@ -115,23 +157,35 @@ export async function runHomepageFixes(
 
   // 3. Gemini writes the diagnosis and copy from the fact sheet and the contact sheet.
   const contactSheet = await s.renderContactSheet(beforeUri, photoUris);
+  ensureWriteTime("the write call");
   const w = await s.write({
     firstName: input.firstName, website: input.website, goal: input.goal,
     facts, contactSheet, photoCount: capture.photos.length, model,
+    beforeRetry: () => ensureWriteTime("the second write attempt"),
   });
   usage = addUsage(usage, w.usage);
   const written = w.written;
-  if (written.fit === "hobby") return { outcome: "hobby", compliment: written.compliment, facts, usage, model };
+  if (written.fit === "hobby") {
+    // Goes straight into the email, so it gets the same hard rules; a failure uses a safe sentence.
+    const fixed = fixText(written.compliment);
+    const bad = checkText("compliment", fixed, undefined, facts.pageText).some((i) => i.level === "error");
+    return { outcome: "hobby", compliment: bad || !fixed ? FALLBACK_COMPLIMENT : fixed, facts, usage, model };
+  }
 
   const photoIndex = Math.min(Math.max(written.photo_choice, 1), capture.photos.length) - 1;
   let content = autoFix(assembleContent(input, facts, written, photoKey(photoIndex, capture.photos[photoIndex].mime)));
   const held = (reason: string, issues: RuleIssue[]): PipelineResult =>
     ({ outcome: "held", reason, content, issues, facts, usage, model });
+  // An optional step's time cutoff: retry with a full budget while the lead has a retry left, else hold.
+  const outOfTime = (step: string, issues: RuleIssue[]): PipelineResult => {
+    if (input.canRetry) throw new OutOfTimeError(step);
+    return held("out of time", issues);
+  };
 
   // 4. Rule check; one repair call for error-level issues only. Warnings never block.
   let issues = checkContent(content, facts.pageText);
   if (errors(issues).length) {
-    if (!hasTime()) return held("out of time", issues);
+    if (!hasTime()) return outOfTime("the repair call", issues);
     const r = await s.repair({ content, issues, model });
     usage = addUsage(usage, r.usage);
     content = autoFix(r.content);
@@ -159,7 +213,7 @@ export async function runHomepageFixes(
   let section = base;
   let shot = await look(section, photoIndex);
   if (!shot.l.ok) {
-    if (!hasTime()) return held("out of time", [...issues, lookIssue(shot.l)]);
+    if (!hasTime()) return outOfTime("the look-check re-render", [...issues, lookIssue(shot.l)]);
     section = { ...base, layout: written.alt_layout, photo_focus: written.alt_photo_focus };
     shot = await look(section, photoIndex);
   }
@@ -167,7 +221,7 @@ export async function runHomepageFixes(
     const n = capture.photos.length;
     const next = n > 1 ? (photoIndex + 1) % n : -1;
     if (next < 0) return held("look check failed", [...issues, lookIssue(shot.l)]);
-    if (!hasTime()) return held("out of time", [...issues, lookIssue(shot.l)]);
+    if (!hasTime()) return outOfTime("the next-photo look check", [...issues, lookIssue(shot.l)]);
     section = { ...base, photo: photoKey(next, capture.photos[next].mime), photo_focus: NEXT_PHOTO_FOCUS };
     shot = await look(section, next);
     if (!shot.l.ok) return held("look check failed", [...issues, lookIssue(shot.l)]);
@@ -182,7 +236,7 @@ export async function runHomepageFixes(
     const over = overflowIssues(content, rendered.overflow);
     const where = rendered.overflow.map((o) => `page ${o.page}`).join(", ");
     if (!over.length) return held(`PDF overflow on ${where}`, issues);
-    if (!hasTime()) return held("out of time", [...issues, ...over]);
+    if (!hasTime()) return outOfTime("the overflow repair", [...issues, ...over]);
     const r = await s.repair({ content, issues: over, model });
     usage = addUsage(usage, r.usage);
     content = autoFix(r.content);

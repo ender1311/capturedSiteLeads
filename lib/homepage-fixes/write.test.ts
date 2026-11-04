@@ -230,6 +230,21 @@ describe("writeReport", () => {
     expect(usage).toEqual({ inputTokens: 10000, outputTokens: 3200, calls: 2, costUsd: expect.closeTo(costOf({ inputTokens: 10000, outputTokens: 3200 }, MODEL), 9) });
   });
 
+  it("runs beforeRetry before the second attempt, and its throw skips that attempt (I2)", async () => {
+    const seq = [
+      { text: '{"fit":"report","headline":"Your Fri', finish: "length" as const, input: 5000, output: 2000 },
+      { text: JSON.stringify(reportJson), input: 5000, output: 1200 },
+    ];
+    const ok = vi.fn();
+    const m1 = mockSeq(seq);
+    await writeReport({ ...input, model: m1, beforeRetry: ok });
+    expect(ok).toHaveBeenCalledTimes(1);
+    const m2 = mockSeq(seq);
+    const late = new Error("out of time");
+    await expect(writeReport({ ...input, model: m2, beforeRetry: () => { throw late; } })).rejects.toBe(late);
+    expect(m2.doGenerateCalls).toHaveLength(1);
+  });
+
   it("retries once when a report is missing fields", async () => {
     const partial = { ...reportJson, headline: " ", fixes: [reportJson.fixes[0]] };
     const m = mockSeq([{ text: JSON.stringify(partial) }, { text: JSON.stringify(reportJson) }]);

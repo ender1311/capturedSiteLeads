@@ -1,7 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
 import { CaptureError } from "./capture";
-import { runHomepageFixes, type Stages } from "./pipeline";
-import type { RuleIssue } from "./rules";
+import { renderAfter as realRenderAfter, renderContactSheet as realRenderContactSheet } from "./render";
+
+// Chromium is a fake here: counts launches and closes (for the one-browser-per-run test).
+const browser = vi.hoisted(() => {
+  const log: string[] = [];
+  const getBrowser = vi.fn(async () => {
+    log.push("launch");
+    return {
+      newPage: async () => ({
+        setJavaScriptEnabled: async () => {}, setViewport: async () => {}, setContent: async () => {},
+        evaluate: async () => [], $: async () => ({ screenshot: async () => new Uint8Array([0xff, 0xd8]) }),
+        pdf: async () => new Uint8Array([0x25]), close: async () => {},
+      }),
+      close: async () => { log.push("close"); },
+    };
+  });
+  return { log, getBrowser };
+});
+vi.mock("@/lib/pdf", () => ({ getBrowser: browser.getBrowser }));
+import { FALLBACK_COMPLIMENT, OutOfTimeError, WRITE_MIN_MS, runHomepageFixes, type Stages } from "./pipeline";
+import { checkText, type RuleIssue } from "./rules";
 import type { Capture, FirstSection, PageData, ReportContent, Usage } from "./types";
 import type { Written } from "./write";
 
@@ -342,11 +361,100 @@ describe("runHomepageFixes", () => {
     });
 
     it("honours a custom deadlineMs", async () => {
-      const { now, write } = slowWrite(30_000, { ...structuredClone(REPORT), headline: "Elevate Your Story" });
+      const { now, write } = slowWrite(40_000, { ...structuredClone(REPORT), headline: "Elevate Your Story" });
       const { stages, spies } = fakes({ now, write });
-      const r = await runHomepageFixes({ ...INPUT, deadlineMs: 80_000 }, stages);
+      const r = await runHomepageFixes({ ...INPUT, deadlineMs: 150_000 }, stages);
       expect(spies.repair).not.toHaveBeenCalled();
       expect(r).toMatchObject({ outcome: "held", reason: "out of time" });
     });
+
+    it(`throws a retryable OutOfTimeError before the write call when under ${WRITE_MIN_MS / 1000} s are left`, async () => {
+      const { stages, spies } = fakes();
+      const err = await runHomepageFixes({ ...INPUT, deadlineMs: WRITE_MIN_MS - 1 }, stages).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(OutOfTimeError);
+      expect(spies.write).not.toHaveBeenCalled();
+    });
+
+    it("gives write a check to run before its second attempt that throws when time is short", async () => {
+      let t = 0;
+      const write = vi.fn(async (i: { beforeRetry?: () => void }) => {
+        t += 200_000; // the first attempt ate most of the budget
+        i.beforeRetry!();
+        return { written: structuredClone(REPORT) as Written, usage: usage(1, 1, 0) };
+      });
+      const { stages } = fakes({ now: () => t, write: write as unknown as Stages["write"] });
+      await expect(runHomepageFixes(INPUT, stages)).rejects.toBeInstanceOf(OutOfTimeError);
+    });
+
+    it("a first attempt that hits the repair cutoff retries instead of holding", async () => {
+      const { now, write } = slowWrite(160_000, { ...structuredClone(REPORT), headline: "Elevate Your Story" });
+      const { stages, spies } = fakes({ now, write });
+      await expect(runHomepageFixes({ ...INPUT, canRetry: true }, stages)).rejects.toBeInstanceOf(OutOfTimeError);
+      expect(spies.repair).not.toHaveBeenCalled();
+    });
+
+    it("a first attempt that hits the look-check or overflow cutoff retries instead of holding", async () => {
+      const { now, write } = slowWrite(215_000);
+      const look = vi.fn(async () => ({ ok: false, faces_ok: false, headline_readable: true, looks_like_template: false, usage: usage(1, 1, 0) }));
+      await expect(runHomepageFixes({ ...INPUT, canRetry: true }, fakes({ now, write, look }).stages)).rejects.toBeInstanceOf(OutOfTimeError);
+      const w2 = slowWrite(215_000);
+      const renderPdf = vi.fn(async () => ({ pdf: Buffer.from("%PDF"), overflow: [{ page: 5, hits: [REPORT.fixes[0].noticed] }] }));
+      await expect(runHomepageFixes({ ...INPUT, canRetry: true }, fakes({ now: w2.now, write: w2.write, renderPdf }).stages)).rejects.toBeInstanceOf(OutOfTimeError);
+    });
+  });
+});
+
+describe("hobby compliment (Minor 1)", () => {
+  const hobby = (compliment: string) => fakes({
+    write: vi.fn(async () => ({ written: { fit: "hobby", compliment } as Written, usage: usage(1, 1, 0) })),
+  }).stages;
+
+  it("auto-fixes dashes and curly quotes like other copy", async () => {
+    const r = await runHomepageFixes(INPUT, hobby("Your beach sessions glow \u2014 truly lovely."));
+    expect(r).toMatchObject({ outcome: "hobby", compliment: "Your beach sessions glow, truly lovely." });
+  });
+
+  it.each([
+    ["a banned word", "Your authentic style shines through."],
+    ["an invented quote", 'I loved reading "the best wedding photographer in town" on your page.'],
+    ["a bracket", "Your [city] sessions look lovely."],
+    ["Captured Sites misspelled", "Captured sites would love your colors."],
+  ])("falls back to a safe sentence on %s", async (_label, compliment) => {
+    const r = await runHomepageFixes(INPUT, hobby(compliment));
+    expect(r).toMatchObject({ outcome: "hobby", compliment: FALLBACK_COMPLIMENT });
+  });
+
+  it("the fallback itself passes the rules", () => {
+    expect(FALLBACK_COMPLIMENT).toBe("Thanks so much for sharing your site with me.");
+    expect(checkText("compliment", FALLBACK_COMPLIMENT, undefined, "")).toEqual([]);
+  });
+});
+
+describe("asset types from a capture (C1)", () => {
+  it("re-checks every asset's type, so a stored bad Content-Type can't reach the render", async () => {
+    const cap = capture({}, 2, true);
+    const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+    cap.logo = { data: PNG, mime: 'image/png"onerror="alert(1)' };
+    cap.photos[1] = { ...cap.photos[1], mime: "text/html" }; // "photo-two" bytes: not an image
+    const { stages, calls, spies } = fakes({}, cap);
+    const r = await runHomepageFixes({ ...INPUT, capture: cap }, stages);
+    expect(r.outcome).toBe("sent");
+    expect(calls.renderAfter[0].logo).toBe(uri(PNG, "image/png"));
+    expect(spies.renderContactSheet).toHaveBeenCalledWith(expect.any(String), [uri(PHOTO1, "image/jpeg")]);
+  });
+});
+
+describe("one Chromium per run (Minor 3)", () => {
+  it("every render in a run shares one browser, closed when the run ends (even on a throw)", async () => {
+    browser.log.length = 0;
+    const renderContactSheet = vi.fn(async (b: string, p: string[]) => {
+      await realRenderContactSheet(b, p);
+      await realRenderAfter({ ...structuredClone(REPORT), nav_items: ["Home"], heading_font: "Lora", body_font: "Lato" } as unknown as FirstSection, p[0]);
+      return Buffer.from("contact");
+    });
+    const write = vi.fn(async () => { throw new Error("stop after the renders"); });
+    const { stages } = fakes({ renderContactSheet, write });
+    await expect(runHomepageFixes(INPUT, stages)).rejects.toThrow("stop after the renders");
+    expect(browser.log).toEqual(["launch", "close"]);
   });
 });

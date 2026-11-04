@@ -100,21 +100,22 @@ async function sendToPhotographer(
 // The row keeps the Resend id of the email it sent, so the webhook credits opens to this row.
 const emailIdCol = (id: string | null) => (id ? { resend_email_id: id } : {});
 
+// A later upsert for the same subscriber (say a hobby after an earlier sent report) must not blank
+// what an earlier one set: goal, pdf_url, the headline and the fix titles go only when non-empty.
+// hf_outcome and hf_sent_date always go (hf_sent_date is empty unless this one sent a PDF).
 async function upsertSubscriber(lead: DeliverLead, outcome: HfOutcome, extra: {
   pdfUrl?: string; headline?: string; fix1?: string; fix2?: string;
 } = {}): Promise<void> {
+  const optional: Record<string, string | undefined> = {
+    goal: lead.goal, hf_headline: extra.headline, hf_fix1_title: extra.fix1, hf_fix2_title: extra.fix2,
+  };
+  const fields: Record<string, string> = Object.fromEntries(
+    Object.entries(optional).filter((e): e is [string, string] => typeof e[1] === "string" && e[1].trim() !== ""),
+  );
+  fields.hf_outcome = outcome;
+  fields.hf_sent_date = outcome === "sent" ? new Date().toISOString().slice(0, 10) : "";
   try {
-    await addSubscriber({
-      name: lead.name, email: lead.email, siteUrl: lead.siteUrl, pdfUrl: extra.pdfUrl ?? "",
-      fields: {
-        goal: lead.goal,
-        hf_outcome: outcome,
-        hf_headline: extra.headline ?? "",
-        hf_fix1_title: extra.fix1 ?? "",
-        hf_fix2_title: extra.fix2 ?? "",
-        hf_sent_date: outcome === "sent" ? new Date().toISOString().slice(0, 10) : "",
-      },
-    });
+    await addSubscriber({ name: lead.name, email: lead.email, siteUrl: lead.siteUrl, pdfUrl: extra.pdfUrl, fields });
   } catch (err) {
     console.warn("MailerLite subscriber upsert failed:", (err as Error).message);
   }
@@ -129,8 +130,7 @@ const usageCols = (r: { usage: { inputTokens: number; outputTokens: number; cost
 export async function deliver(leadId: string, lead: DeliverLead, result: PipelineResult): Promise<void> {
   switch (result.outcome) {
     case "sent": {
-      const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const folder = `homepage-fixes/${unique}`;
+      const folder = `homepage-fixes/${crypto.randomUUID()}`;
       const fileName = pdfFileName(result.content.first_name || lead.name);
       const beforeName = isPng(result.before) ? "before.png" : "before.jpg";
       const [pdf, before, after] = await Promise.all([

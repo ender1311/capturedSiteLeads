@@ -24,7 +24,8 @@ export async function addSubscriber(input: {
   name: string;
   email: string;
   siteUrl: string;
-  pdfUrl: string;
+  /** Sent only when non-empty, so a later upsert never blanks an earlier PDF link. */
+  pdfUrl?: string;
   fields?: Record<string, string>;
 }): Promise<void> {
   await ml("/subscribers", {
@@ -34,7 +35,7 @@ export async function addSubscriber(input: {
       fields: {
         name: input.name,
         site_url: input.siteUrl,
-        pdf_url: input.pdfUrl,
+        ...(input.pdfUrl ? { pdf_url: input.pdfUrl } : {}),
         ...input.fields,
       },
       groups: [process.env.MAILERLITE_GROUP_ID],

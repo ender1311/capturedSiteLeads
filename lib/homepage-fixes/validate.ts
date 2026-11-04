@@ -185,9 +185,13 @@ function parseSite(site: string): URL | null {
   }
 }
 
+export type Lookup = (h: string) => Promise<unknown>;
+export const defaultLookup: Lookup = (h) => dns.lookup(h, { all: true, verbatim: true });
+
 // Refuses non-web schemes, private names, and hosts that resolve to private or
 // reserved addresses. Run on the first URL and on every redirect target.
-async function vet(url: URL, lookup: (h: string) => Promise<unknown>): Promise<SiteCheck | null> {
+// null = safe to fetch. A DNS outage answers { ok: true } (the on-page check passes).
+export async function vet(url: URL, lookup: Lookup): Promise<SiteCheck | null> {
   if (url.protocol !== "https:" && url.protocol !== "http:") return unreachable("bad_url");
   if (url.username || url.password) return unreachable("bad_url");
   if (unsafeUrlReason(url.href)) return unreachable("bad_url");
@@ -200,6 +204,15 @@ async function vet(url: URL, lookup: (h: string) => Promise<unknown>): Promise<S
   if (addresses.length === 0) return unreachable("no_such_site");
   if (addresses.some(isReservedIp)) return unreachable("bad_url");
   return null;
+}
+
+/**
+ * For server-side fetches of URLs a submitted page handed us (capture's images and link checks):
+ * true only when vet() finds nothing wrong. Unlike the on-page check this fails closed, so a
+ * DNS outage refuses.
+ */
+export async function isPublicUrl(url: URL, lookup: Lookup = defaultLookup): Promise<boolean> {
+  return (await vet(url, lookup)) === null;
 }
 
 async function readCapped(res: Response, cap: number): Promise<string> {
@@ -251,7 +264,7 @@ export function isPlaceholderPage(html: string): boolean {
 }
 
 export async function checkWebsite(site: string, deps: SiteDeps = {}): Promise<SiteCheck> {
-  const lookup = deps.lookup ?? ((h: string) => dns.lookup(h, { all: true, verbatim: true }));
+  const lookup = deps.lookup ?? defaultLookup;
   const fetchImpl = deps.fetchImpl ?? fetch;
 
   let url = parseSite(site);

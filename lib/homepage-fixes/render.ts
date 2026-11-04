@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { Browser, Page } from "puppeteer-core";
 import { getBrowser } from "@/lib/pdf";
 import { firstSectionHtml, contactSheetHtml } from "./render-html";
 import type { FirstSection } from "./types";
@@ -10,21 +12,43 @@ function serial<T>(fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-async function withPage<T>(
-  viewport: { width: number; height: number; deviceScaleFactor?: number },
-  fn: (page: import("puppeteer-core").Page) => Promise<T>
-): Promise<T> {
-  const browser = await getBrowser();
+// One Chromium per report run (spec section 7): withBrowser scopes a browser to everything the
+// run renders (AsyncLocalStorage, so two runs on one instance never share or close each other's),
+// launched on the first render and closed when the run ends, however it ends. Each render gets a
+// new page. Outside withBrowser a render launches and closes its own browser.
+const runBrowser = new AsyncLocalStorage<{ browser?: Promise<Browser> }>();
+
+export async function withBrowser<T>(fn: () => Promise<T>): Promise<T> {
+  const slot: { browser?: Promise<Browser> } = {};
   try {
-    const page = await browser.newPage();
-    await page.setViewport(viewport);
-    return await fn(page);
+    return await runBrowser.run(slot, fn);
   } finally {
-    await browser.close();
+    if (slot.browser) await slot.browser.then((b) => b.close()).catch(() => {});
   }
 }
 
-async function load(page: import("puppeteer-core").Page, html: string) {
+async function withPage<T>(
+  viewport: { width: number; height: number; deviceScaleFactor?: number },
+  fn: (page: Page) => Promise<T>
+): Promise<T> {
+  const slot = runBrowser.getStore();
+  if (slot) slot.browser ??= getBrowser();
+  const browser = slot ? await slot.browser! : await getBrowser();
+  let page: Page | undefined;
+  try {
+    page = await browser.newPage();
+    // Nothing rendered here needs scripts (fonts load through <link>; page.evaluate still works),
+    // and none of the page's content may run any.
+    await page.setJavaScriptEnabled(false);
+    await page.setViewport(viewport);
+    return await fn(page);
+  } finally {
+    if (slot) await page?.close().catch(() => {});
+    else await browser.close();
+  }
+}
+
+async function load(page: Page, html: string) {
   await page.setContent(html, { waitUntil: "load", timeout: 30_000 }).catch(() => {});
   await page.evaluate("document.fonts.ready");
 }

@@ -198,15 +198,29 @@ describe("deliver", () => {
     expect(lastUpdate().outcome).toBe("sent");
   });
 
-  it("deliver hobby: hobby email with the compliment, MailerLite upsert with empty pdf_url", async () => {
+  it("deliver hobby: hobby email with the compliment; the MailerLite upsert never blanks earlier fields (Minor 5)", async () => {
     await deliver("lead-2", LEAD, { outcome: "hobby", compliment: "Your beach sessions glow.", facts: FACTS, usage: USAGE, model: "m" });
     const [email] = resend();
     expect(email.body!.subject).toBe("Jane, a little note about your website");
     expect(String(email.body!.text)).toContain("Your beach sessions glow.");
     expect(email.body!.attachments).toBeUndefined();
     const fields = ml("/subscribers")[0].body!.fields as Record<string, string>;
-    expect(fields).toMatchObject({ pdf_url: "", hf_outcome: "hobby", hf_headline: "", hf_fix1_title: "", hf_fix2_title: "", hf_sent_date: "" });
+    expect(fields).toEqual({ name: "Jane", site_url: "https://janedoe.com", goal: "more family sessions", hf_outcome: "hobby", hf_sent_date: "" });
     expect(lastUpdate()).toMatchObject({ outcome: "hobby", cost_usd: 0.0064 });
+  });
+
+  it("an empty goal is left out of the upsert, never sent as a blank (Minor 5)", async () => {
+    await deliver("lead-2", { ...LEAD, goal: "" }, { outcome: "cant_see", reason: "COMING_SOON", usage: USAGE });
+    const fields = ml("/subscribers")[0].body!.fields as Record<string, string>;
+    expect(fields).not.toHaveProperty("goal");
+    expect(fields).not.toHaveProperty("pdf_url");
+    expect(fields).toMatchObject({ hf_outcome: "cant_see", hf_sent_date: "" });
+  });
+
+  it("Blob folders are random UUIDs (Minor 10)", async () => {
+    await deliver("lead-1", LEAD, sent());
+    const folder = String(h.put.mock.calls[0][0]).split("/")[1];
+    expect(folder).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
   });
 
   it("deliver cant_see maps each reason to its copy", async () => {
@@ -391,7 +405,9 @@ describe("deliverFailed", () => {
     expect(String(mails[0].body!.text)).toContain("couldn't load your homepage");
     expect(mails[1].body!.to).toEqual(["danluk1311@gmail.com"]);
     const [sub] = ml("/subscribers");
-    expect(sub.body!.fields).toMatchObject({ hf_outcome: "failed", pdf_url: "" });
+    expect(sub.body!.fields).toMatchObject({ hf_outcome: "failed", hf_sent_date: "" });
+    expect(sub.body!.fields).not.toHaveProperty("pdf_url");
+    expect(sub.body!.fields).not.toHaveProperty("hf_headline");
     expect(lastUpdate()).toMatchObject({ outcome: "failed", error: "Firecrawl 502", status: "failed" });
   });
 

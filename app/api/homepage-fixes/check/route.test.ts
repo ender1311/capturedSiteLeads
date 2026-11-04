@@ -109,6 +109,14 @@ describe("GET /api/homepage-fixes/check", () => {
     expect(text).toMatch(/insert into check_hits/);
     expect(text).toMatch(/interval '10 minutes'/);
   });
+
+  it("prunes old hits for every IP, not just the caller's (Minor 8)", async () => {
+    await GET(req("?email=bob%40x.com"));
+    const text = h.tag.mock.calls[0][0].join("?");
+    const prune = text.match(/delete from check_hits[\s\S]*?returning/)?.[0] ?? "";
+    expect(prune).toMatch(/at < now\(\) - interval '10 minutes'/);
+    expect(prune).not.toMatch(/ip\s*=/);
+  });
 });
 
 describe("CORS", () => {

@@ -1,6 +1,7 @@
 import { Firecrawl, type ScrapeOptions } from "@mendable/firecrawl-js";
 import { DISMISS_SCRIPT, EXTRACT_SCRIPT, FRAME_SCRIPT, SCREEN_H, SCREEN_W, scrollStepScript } from "./page-script";
 import type { Asset, Capture, ImageCandidate, PageData } from "./types";
+import { defaultLookup, isPublicUrl, type Lookup } from "./validate";
 
 export class CaptureError extends Error {
   kind: "bot_check" | "unreachable" | "empty";
@@ -20,6 +21,7 @@ const MIN_HERO_FILE_W = 600;
 const MAX_PHOTO_TRIES = 6;
 const MAX_LINKS_CHECKED = 15;
 const DOWNLOAD_TIMEOUT_MS = 10_000;
+const MAX_REDIRECTS = 5;
 const LINK_TIMEOUT_MS = 5_000;
 const BROWSER_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
@@ -89,16 +91,62 @@ export function parseScrape(doc: ScrapeDoc): { page: PageData; screenshotUrl: st
   return { page: { ...page, dismissed }, screenshotUrl: doc.screenshot };
 }
 
-async function download(fetchImpl: typeof fetch, url: string, timeoutMs: number): Promise<Asset | null> {
+type FetchDeps = { fetchImpl: typeof fetch; lookup: Lookup };
+
+/**
+ * Every server-side fetch of a URL the submitted page handed us: each URL and each redirect hop is
+ * vetted first (no private, loopback, link-local or metadata addresses; DNS failure refuses), and
+ * redirects are followed by hand, at most 5. null when refused.
+ */
+async function vettedFetch(deps: FetchDeps, url: string, init: RequestInit): Promise<Response | null> {
+  let u: URL;
+  try { u = new URL(url); } catch { return null; }
+  for (let hop = 0; ; hop++) {
+    if (!(await isPublicUrl(u, deps.lookup))) return null;
+    const res = await deps.fetchImpl(u.href, { ...init, redirect: "manual", credentials: "omit" });
+    const location = res.headers.get("location");
+    if (res.status < 300 || res.status >= 400 || !location) return res;
+    await res.body?.cancel().catch(() => {});
+    if (hop >= MAX_REDIRECTS) return null;
+    try { u = new URL(location, u); } catch { return null; }
+  }
+}
+
+// The image types a downloaded file may be rendered as. SVG is allowed only because every image
+// goes into <img src> or CSS url() as a data URI (scripts never run there), never inlined.
+const IMAGE_MIME_RE = /^image\/(jpeg|png|webp|gif|avif|svg\+xml)$/;
+
+/** An image type from the file's leading bytes (JPEG, PNG, GIF, WebP, AVIF), or null. */
+export function sniffImageMime(b: Buffer): string | null {
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "image/jpeg";
+  if (b.length >= 8 && b.readUInt32BE(0) === 0x89504e47 && b.readUInt32BE(4) === 0x0d0a1a0a) return "image/png";
+  if (b.length >= 6 && /^GIF8[79]a$/.test(b.toString("latin1", 0, 6))) return "image/gif";
+  if (b.length >= 12 && b.toString("latin1", 0, 4) === "RIFF" && b.toString("latin1", 8, 12) === "WEBP") return "image/webp";
+  if (b.length >= 12 && b.toString("latin1", 4, 8) === "ftyp" && /^avi[fs]$/.test(b.toString("latin1", 8, 12))) return "image/avif";
+  return null;
+}
+
+/**
+ * The type a downloaded file is kept as: the server's Content-Type only when it is exactly an
+ * allowed image type, else whatever its bytes say, else null (drop it). The result only ever
+ * holds [a-z0-9.+/-], so it is safe inside a data: URI in an attribute.
+ */
+export function imageMime(contentType: string, data: Buffer): string | null {
+  const t = contentType.split(";")[0].trim().toLowerCase();
+  return IMAGE_MIME_RE.test(t) ? t : sniffImageMime(data);
+}
+
+async function download(deps: FetchDeps, url: string, timeoutMs: number): Promise<Asset | null> {
   try {
-    const res = await fetchImpl(url, {
+    const res = await vettedFetch(deps, url, {
       headers: { "user-agent": BROWSER_UA, accept: "image/avif,image/webp,image/*,*/*;q=0.8" },
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!res.ok) return null;
-    const mime = (res.headers.get("content-type") ?? "").split(";")[0].trim() || "image/jpeg";
+    if (!res?.ok) return null;
     const data = Buffer.from(await res.arrayBuffer());
-    return data.length ? { data, mime } : null;
+    if (!data.length) return null;
+    const mime = imageMime(res.headers.get("content-type") ?? "", data);
+    return mime ? { data, mime } : null;
   } catch {
     return null;
   }
@@ -153,9 +201,9 @@ export function sourceUrls(src: string): string[] {
   }).concat(src))];
 }
 
-async function downloadFirst(fetchImpl: typeof fetch, urls: string[]): Promise<Asset | null> {
+async function downloadFirst(deps: FetchDeps, urls: string[]): Promise<Asset | null> {
   for (const url of urls) {
-    const asset = await download(fetchImpl, url, DOWNLOAD_TIMEOUT_MS);
+    const asset = await download(deps, url, DOWNLOAD_TIMEOUT_MS);
     if (asset) return asset;
   }
   return null;
@@ -182,7 +230,7 @@ function qualifies(asset: Asset, candidate: ImageCandidate): boolean {
 const bareHost = (u: URL) => u.hostname.replace(/^www\./, "");
 
 async function checkLinks(
-  fetchImpl: typeof fetch,
+  deps: FetchDeps,
   page: PageData,
 ): Promise<Capture["linkStatus"]> {
   const status: Capture["linkStatus"] = {};
@@ -199,17 +247,19 @@ async function checkLinks(
     if (toCheck.length < MAX_LINKS_CHECKED) toCheck.push(href);
   }
   await Promise.all(toCheck.map(async (href) => {
-    const req = (method: string) => fetchImpl(href, {
-      method, redirect: "follow", headers: { "user-agent": BROWSER_UA }, signal: AbortSignal.timeout(LINK_TIMEOUT_MS),
+    // Relative to the page; a refused URL or redirect hop counts as no response.
+    const target = new URL(href, base).href;
+    const req = (method: string) => vettedFetch(deps, target, {
+      method, headers: { "user-agent": BROWSER_UA }, signal: AbortSignal.timeout(LINK_TIMEOUT_MS),
     });
     try {
       let res = await req("HEAD");
       // Some servers (and bot shields) refuse HEAD; ask once more with GET and use that status.
-      if (res.status === 403 || res.status === 405 || res.status === 501) {
+      if (res && (res.status === 403 || res.status === 405 || res.status === 501)) {
         res = await req("GET");
-        await res.body?.cancel().catch(() => {}); // headers are enough
+        await res?.body?.cancel().catch(() => {}); // headers are enough
       }
-      status[href] = res.status;
+      status[href] = res ? res.status : "no response";
     } catch {
       status[href] = "no response";
     }
@@ -217,33 +267,62 @@ async function checkLinks(
   return status;
 }
 
-export async function captureSite(url: string, opts: { fetchImpl?: typeof fetch } = {}): Promise<Capture> {
+type CaptureOpts = { fetchImpl?: typeof fetch; lookup?: Lookup };
+
+// Firecrawl's own words for "the target site is the problem" (its SCRAPE_* error codes carry these
+// too), as opposed to a problem with our account or Firecrawl's service.
+const TARGET_FAILED_RE =
+  /dns resolution|failing to load|ERR_NAME_NOT_RESOLVED|ERR_CONNECTION|ERR_ADDRESS_UNREACHABLE|ERR_SSL|ERR_CERT|ERR_TIMED_OUT|no longer supported/i;
+const CLIENT_TIMEOUT_CODES = new Set(["ECONNABORTED", "ETIMEDOUT"]);
+
+/**
+ * True when a scrape error means the target site couldn't be seen (unreachable, DNS failure,
+ * blocked by Firecrawl, or the 45 s scrape timeout): those become can't-see. Our key, credits, rate
+ * limit and Firecrawl's own outages (401, 402, 429, 5xx, network errors to its API) are not, so
+ * they throw plainly and the lead goes retrying, then failed with an alert.
+ */
+export function isTargetFailure(e: unknown): boolean {
+  const err = (e ?? {}) as { status?: unknown; code?: unknown; message?: unknown };
+  const status = typeof err.status === "number" ? err.status : undefined;
+  const code = typeof err.code === "string" ? err.code : "";
+  const message = typeof err.message === "string" ? err.message : "";
+  if (status === 401 || status === 402 || status === 429) return false;
+  if (code.startsWith("SCRAPE_") || status === 408) return true;
+  if (status === undefined && (CLIENT_TIMEOUT_CODES.has(code) || /\btimeout of \d+ms exceeded\b/i.test(message))) return true;
+  return (status === undefined || status === 403 || status >= 500) && TARGET_FAILED_RE.test(message);
+}
+
+export async function captureSite(url: string, opts: CaptureOpts = {}): Promise<Capture> {
   const target = /^https?:\/\//i.test(url) ? url : `https://${url}`;
   const apiKey = process.env.FIRECRAWL_API_KEY;
-  if (!apiKey) throw new CaptureError("unreachable", "FIRECRAWL_API_KEY is not set, so the site could not be captured");
+  // Our setup, not the site: a plain error (retried, then failed with an alert).
+  if (!apiKey) throw new Error("FIRECRAWL_API_KEY is not set, so the site could not be captured");
   const firecrawl = new Firecrawl({ apiKey });
 
   let doc: ScrapeDoc;
   try {
     doc = (await firecrawl.scrape(target, SCRAPE_OPTIONS)) as ScrapeDoc;
   } catch (e) {
-    throw new CaptureError("unreachable", `Firecrawl could not load ${target}: ${e instanceof Error ? e.message : String(e)}`);
+    const why = e instanceof Error ? e.message : String(e);
+    if (isTargetFailure(e)) throw new CaptureError("unreachable", `Firecrawl could not load ${target}: ${why}`);
+    const status = (e as { status?: unknown })?.status;
+    throw new Error(`Firecrawl scrape failed${typeof status === "number" ? ` (HTTP ${status})` : ""}: ${why}`);
   }
   return captureFromDoc(target, doc, opts);
 }
 
 // Everything after the scrape: screenshot, photos, logo and link checks.
-export async function captureFromDoc(url: string, doc: ScrapeDoc, opts: { fetchImpl?: typeof fetch } = {}): Promise<Capture> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
+export async function captureFromDoc(url: string, doc: ScrapeDoc, opts: CaptureOpts = {}): Promise<Capture> {
+  const deps: FetchDeps = { fetchImpl: opts.fetchImpl ?? fetch, lookup: opts.lookup ?? defaultLookup };
   const { page, screenshotUrl } = parseScrape(doc);
   const screenH = page.screenH > 0 ? page.screenH : SCREEN_H;
 
-  const before = await download(fetchImpl, screenshotUrl, DOWNLOAD_TIMEOUT_MS);
+  const before = await download(deps, screenshotUrl, DOWNLOAD_TIMEOUT_MS);
   if (!before) throw new CaptureError("empty", "Could not download the Firecrawl screenshot");
 
   const photosP = (async () => {
     const candidates = photoOrder(page.imgs, screenH).slice(0, MAX_PHOTO_TRIES);
-    const assets = await Promise.all(candidates.map((c) => downloadFirst(fetchImpl, sourceUrls(c.src))));
+    const assets = await Promise.all(candidates.map((c) => downloadFirst(deps, sourceUrls(c.src))));
     const photos: Capture["photos"] = [];
     candidates.forEach((candidate, i) => {
       const asset = assets[i];
@@ -253,8 +332,8 @@ export async function captureFromDoc(url: string, doc: ScrapeDoc, opts: { fetchI
     });
     return photos;
   })();
-  const logoP = page.logo ? download(fetchImpl, page.logo.src, DOWNLOAD_TIMEOUT_MS) : Promise.resolve(null);
-  const [photos, logo, linkStatus] = await Promise.all([photosP, logoP, checkLinks(fetchImpl, page)]);
+  const logoP = page.logo ? download(deps, page.logo.src, DOWNLOAD_TIMEOUT_MS) : Promise.resolve(null);
+  const [photos, logo, linkStatus] = await Promise.all([photosP, logoP, checkLinks(deps, page)]);
 
   return { url, page, before, photos, logo, linkStatus, capturedAt: new Date().toISOString() };
 }

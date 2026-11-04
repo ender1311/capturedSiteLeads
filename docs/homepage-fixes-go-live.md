@@ -2,6 +2,18 @@
 
 Design: [docs/superpowers/specs/2026-11-03-homepage-fixes-design.md](./superpowers/specs/2026-11-03-homepage-fixes-design.md). Items marked done were applied to the live systems on 2026-11-04. Do not redo them.
 
+## Pre-merge gate (all must pass before merging)
+
+**Merging is the go-live.** The live Free Audit form posts to `/api/lead`, which switches to the homepage-fixes pipeline the moment `feat/homepage-fixes` reaches production. Real leads start flowing through it on that deploy, so every item below must be done first.
+
+- [ ] **Gemini key returns 200.** Add prepaid credit (step 4a), then make one paid call with the production key and see a 200, not 402. Gemini answered 402 on 2026-11-04.
+- [ ] **Firecrawl has credits.** Check the Firecrawl dashboard (https://www.firecrawl.dev/app) shows credits left on the account whose key is `FIRECRAWL_API_KEY`.
+- [ ] **Resend domain capturedsites.com is verified.** It was confirmed verified on 2026-11-03; re-check Resend → Domains shows Verified. Without it, reports fall back to MailerLite's link-only email (no PDF attached) and every alert to Dan is lost.
+- [ ] **MailerLite "Lead Generator Follow-ups" automation is paused, or rewritten by Maggie.** Otherwise its roadmap copy goes to every new homepage-fixes, hobby and can't-see subscriber.
+- [ ] **One local CLI run produces a PDF.** Run the step 7 command on one real site (or `--from-capture out/<folder>` to skip Firecrawl) and open the PDF it writes under `out/`.
+
+Only then merge.
+
 ## Deploy order (must be followed)
 
 1. **capturedSiteLeads first:** merge `feat/homepage-fixes` into main, so Vercel deploys it to production.
@@ -14,7 +26,7 @@ If the order is reversed, beacon-frontier's daily product pull hits an endpoint 
 | # | Step | Status |
 |---|---|---|
 | 1 | Neon schema | Done 2026-11-04 |
-| 2 | MailerLite fields | Open (run the script) |
+| 2 | MailerLite fields | Done 2026-11-04 |
 | 3 | Resend tracking and webhook | Open (Resend dashboard) |
 | 4 | Vercel env | Mostly done 2026-11-04; open items below |
 | 4a | Gemini prepaid credit | Open |
@@ -28,7 +40,9 @@ If the order is reversed, beacon-frontier's daily product pull hits an endpoint 
 
 The whole homepage-fixes schema block is applied, including `resend_email_id`. Check with `\d leads` in the Neon SQL editor if you want to see it.
 
-## 2. MailerLite custom fields
+## 2. MailerLite custom fields: DONE 2026-11-04
+
+The script created the fields on 2026-11-04. It is idempotent, so a rerun is harmless.
 
 `name`, `site_url` and `pdf_url` already exist. The script creates the missing text fields (`goal`, `hf_outcome`, `hf_headline`, `hf_fix1_title`, `hf_fix2_title`, `hf_sent_date`). It is idempotent and never prints the key.
 
@@ -84,7 +98,13 @@ Note: the Free Audit page (id 1257, `/free-audit/`) posts to `https://captured-s
 
 ## 6. Test with a real submission
 
-Submit the live form with Dan's email. Confirm: the email arrives with the PDF attached, a row shows in https://beaconfrontier.com/admin/site/capturedsites, and the MailerLite subscriber has the `hf_*` fields filled.
+Submit the live form with Dan's email. Confirm:
+
+- The email arrives from `maggie@capturedsites.com` with the PDF **attached**. An attachment proves it went through Resend; a link-only email means it fell back to MailerLite, so check Resend before going further.
+- A row shows in https://beaconfrontier.com/admin/site/capturedsites.
+- The MailerLite subscriber has the `hf_*` fields filled.
+- **An alert reaches Dan.** Submit one coming-soon or unreachable site (for example with `curl` and the webhook secret) and confirm Dan gets the alert email.
+- **The crons are deployed:** Vercel → capturedSiteLeads → Settings → Cron Jobs lists `/api/cron/homepage-fixes` (every 15 minutes) and `/api/cron/homepage-fixes?queue=1` (every 15 minutes, 12:00 to 16:45 UTC).
 
 ## 7. Pre-launch: 10-site batch for Maggie
 

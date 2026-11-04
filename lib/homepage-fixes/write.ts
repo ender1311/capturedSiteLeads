@@ -230,6 +230,8 @@ class AttemptError extends Error {
 
 export async function writeReport(input: {
   firstName: string; website: string; goal: string; facts: Facts; contactSheet: Buffer; photoCount: number; model?: ModelArg;
+  /** Runs before the second attempt; throws to skip it (the pipeline's time check). */
+  beforeRetry?: () => void;
 }): Promise<{ written: Written; usage: Usage }> {
   const model = input.model ?? DEFAULT_MODEL;
   const photoCount = clampPhotos(input.photoCount);
@@ -270,6 +272,7 @@ export async function writeReport(input: {
   } catch (e) {
     // Truncated, looping, incomplete or timed-out output: retry once (still "low", the model's lowest level).
     if (!(e instanceof AttemptError)) throw e;
+    input.beforeRetry?.();
     try {
       const second = await attempt("low");
       return { written: second.written, usage: addUsage(e.usage, second.usage) };

@@ -39,13 +39,13 @@ function corsHeaders(req: NextRequest): Record<string, string> {
 
 // Records this hit and counts the IP's earlier hits in the window, in one round
 // trip. The CTE's insert isn't visible to the count, so `n` excludes this hit.
-// Also trims this IP's expired rows. Any DB problem fails open.
+// Also trims every IP's expired rows, so the table stays small. Any DB problem fails open.
 async function overRateLimit(ip: string | null): Promise<boolean> {
   if (!ip) return false;
   try {
     const rows = (await sql()`
       with ins as (insert into check_hits (ip) values (${ip}) returning 1),
-           old as (delete from check_hits where ip = ${ip} and at < now() - interval '10 minutes' returning 1)
+           old as (delete from check_hits where at < now() - interval '10 minutes' returning 1)
       select count(*)::int as n from check_hits
       where ip = ${ip} and at > now() - interval '10 minutes'
     `) as { n: number }[];

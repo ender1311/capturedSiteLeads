@@ -356,7 +356,9 @@ describe("POST /api/homepage-fixes", () => {
     seed({ outcome: "sent", pdf_url: "https://blob.test/homepage-fixes/x/your-top-homepage-fixes-jane.pdf", site_url: "https://www.janedoe.com/" });
     await postAndSettle(JANE);
     expect(h.runHomepageFixes).not.toHaveBeenCalled();
-    expect(row("lead-2")).toMatchObject({ outcome: "sent", pdf_url: "https://blob.test/homepage-fixes/x/your-top-homepage-fixes-jane.pdf" });
+    // A re-send is not a new report (Minor 6): the row is limited, so metrics never count it as sent.
+    expect(row("lead-2")).toMatchObject({ outcome: "limited", pdf_url: "https://blob.test/homepage-fixes/x/your-top-homepage-fixes-jane.pdf" });
+    expect(row("lead-2").error).toMatch(/re-sent the report from lead seed-1/);
     const mail = toPhotographer("jane@example.com");
     expect(mail).toHaveLength(1);
     const expected = reportEmail("Jane", "https://blob.test/homepage-fixes/x/your-top-homepage-fixes-jane.pdf", true);
@@ -491,7 +493,8 @@ describe("processLead", () => {
     expect(mail[0].body!.html).toBe(cantSeeEmail("Jane", "couldnt_load").html);
     expect(alerts()).toHaveLength(1);
     const ml = mailerlite().find((c) => c.body && "fields" in c.body)!;
-    expect(ml.body!.fields).toMatchObject({ hf_outcome: "failed", pdf_url: "" });
+    expect(ml.body!.fields).toMatchObject({ hf_outcome: "failed", hf_sent_date: "" });
+    expect(ml.body!.fields).not.toHaveProperty("pdf_url");
   });
 
   it("emails greet by first name: re-sent report and the failed path", async () => {
@@ -557,6 +560,81 @@ describe("processLead", () => {
     await processLead(id);
     expect(h.captureSite).toHaveBeenCalledWith("https://janedoe.com");
     expect(h.store.putCachedCapture).toHaveBeenCalledWith("janedoe.com", fresh);
+  });
+});
+
+describe("processLead: deadline and cache (I2, Minor 2)", () => {
+  it("tells the pipeline whether the lead still has a retry left", async () => {
+    const first = seed({ outcome: "processing", retry_count: 0 });
+    await processLead(first);
+    expect(h.runHomepageFixes.mock.calls[0][0].canRetry).toBe(true);
+    const last = seed({ email: "kim@example.com", outcome: "retrying", retry_count: 1 });
+    await processLead(last);
+    expect(h.runHomepageFixes.mock.calls[1][0].canRetry).toBe(false);
+  });
+
+  it("an out-of-time throw on the first attempt sends the lead to retrying, with no email", async () => {
+    const { OutOfTimeError } = await import("./pipeline");
+    const id = seed({ outcome: "processing" });
+    h.runHomepageFixes.mockRejectedValue(new OutOfTimeError("the write call"));
+    await processLead(id);
+    expect(row(id)).toMatchObject({ outcome: "retrying", retry_count: 1 });
+    expect(resendCalls()).toHaveLength(0);
+  });
+
+  const withFreshCapture = (result: unknown) => {
+    h.captureSite.mockResolvedValue({ url: "https://janedoe.com", fresh: true });
+    h.runHomepageFixes.mockImplementation(async (input: { website: string }, stages: { capture: (u: string) => Promise<unknown> }) => {
+      await stages.capture(input.website);
+      if (result instanceof Error) throw result;
+      return result;
+    });
+  };
+
+  it.each([["COMING_SOON"], ["TOO_LITTLE_TEXT"], ["NO_PHOTO"], ["BOT_CHECK"]])(
+    "does not cache a capture that ended in can't-see (%s), so a resubmit after launch scrapes again",
+    async (reason) => {
+      withFreshCapture({ outcome: "cant_see", reason, usage: {} });
+      await processLead(seed({ outcome: "processing" }));
+      expect(h.store.putCachedCapture).not.toHaveBeenCalled();
+    },
+  );
+
+  it("still caches the capture when the run fails, so the retry skips Firecrawl", async () => {
+    withFreshCapture(new Error("Gemini 503"));
+    await processLead(seed({ outcome: "processing" }));
+    expect(h.store.putCachedCapture).toHaveBeenCalledWith("janedoe.com", { url: "https://janedoe.com", fresh: true });
+  });
+});
+
+describe("sweep start cutoff (I2)", () => {
+  it("starts a lead only while it still gets at least 240 s, so a slow first lead stops the run", async () => {
+    let t = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => t);
+    const a = seed({ outcome: "retrying", retry_count: 1, started_minutes_ago: 30 });
+    const b = seed({ email: "kim@example.com", outcome: "retrying", retry_count: 1, started_minutes_ago: 30 });
+    h.runHomepageFixes.mockImplementation(async () => { t += 31_000; return SENT_RESULT; });
+    expect(await sweep()).toEqual({ queued: 0, retried: 1 });
+    expect(h.runHomepageFixes.mock.calls[0][0].deadlineMs).toBeGreaterThanOrEqual(240_000);
+    expect(row(a).outcome).toBe("sent");
+    expect(row(b).outcome).toBe("retrying");
+  });
+
+  it("fast leads (a re-send, a can't-see) still let the next one start", async () => {
+    let t = 1_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => t);
+    seed({ outcome: "retrying", retry_count: 1, started_minutes_ago: 30 });
+    seed({ email: "kim@example.com", outcome: "retrying", retry_count: 1, started_minutes_ago: 30 });
+    h.runHomepageFixes.mockImplementation(async () => { t += 5_000; return SENT_RESULT; });
+    expect(await sweep()).toEqual({ queued: 0, retried: 2 });
+    for (const c of h.runHomepageFixes.mock.calls) expect(c[0].deadlineMs).toBeGreaterThanOrEqual(240_000);
+  });
+
+  it("the queue cron runs every 15 minutes through the morning, since each run builds about one lead", async () => {
+    const fs = await import("node:fs");
+    const cfg = JSON.parse(fs.readFileSync("vercel.json", "utf8")) as { crons: { path: string; schedule: string }[] };
+    const queue = cfg.crons.find((c) => c.path.includes("queue=1"))!;
+    expect(queue.schedule).toBe("*/15 12-16 * * *");
   });
 });
 

@@ -251,7 +251,7 @@ export async function getCachedCapture(domain: string, maxAgeDays = 7): Promise<
 export async function putCachedCapture(domain: string, c: Capture): Promise<void> {
   try {
     const d = domainOf(domain);
-    const folder = `scrape-cache/${d.replace(/[^a-z0-9.-]/g, "-")}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const folder = `scrape-cache/${d.replace(/[^a-z0-9.-]/g, "-")}/${crypto.randomUUID()}`;
     const upload = async (name: string, a: Asset): Promise<StoredAsset> => {
       const { url } = await put(`${folder}/${name}.${ext(a.mime)}`, a.data, { access: "public", contentType: a.mime });
       return { url, mime: a.mime };

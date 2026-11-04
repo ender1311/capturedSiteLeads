@@ -9,12 +9,13 @@ import { captureSite } from "./capture";
 import {
   DeliveredNotRecordedError, deliver, deliverFailed, resendReport, sendAlert, type DeliverLead,
 } from "./deliver";
-import { runHomepageFixes, DEFAULT_DEADLINE_MS } from "./pipeline";
+import { runHomepageFixes, DEFAULT_DEADLINE_MS, type PipelineResult } from "./pipeline";
 import {
   REPORT_TYPE, claimCapAlert, claimHfLead, domainOf, getCachedCapture, getHfLead, insertHfLead,
   latestSentFor, markStuckLeads, putCachedCapture, queuedLeads, recentProcessingFor, retryingLeads,
   updateHfLead, type HfOutcome,
 } from "./store";
+import type { Capture } from "./types";
 import { TIMEOUT_PASS, checkEmail, checkWebsite, withDeadline, type FieldCheck } from "./validate";
 
 // Intake for "Your Top Homepage Fixes" (spec section 2) and the retry/queue sweep (section 8).
@@ -30,10 +31,12 @@ const RETRY_AFTER_MINUTES = 10;
 // A build attempt lasts at most 300 s; one still `processing` after this long was killed mid-run.
 const STUCK_AFTER_MINUTES = 20;
 const MAX_PER_SWEEP = 20;
-// A sweep shares one 300 s function. Each lead gets the rest of the 270 s pipeline budget, and a
-// new lead starts only while that still leaves room for a full worst-case run (capture, write,
-// look check, PDF, delivery), so the function is never killed with a row half done.
-const LATEST_START_MS = 75_000;
+// A sweep shares one 300 s function (maxDuration). Each lead gets the rest of the 270 s pipeline
+// budget, and a new lead starts only in the first 30 s, so every lead built gets at least 240 s:
+// room for a full worst-case run (capture, write, look check, PDF, delivery), never killed with a
+// row half done. In practice a run builds one slow lead (plus any fast re-sends or can't-sees), so
+// the queue cron runs every 15 minutes through the morning (vercel.json).
+const LATEST_START_MS = 30_000;
 
 const intakeSchema = z.object({
   name: leadName,
@@ -151,7 +154,7 @@ async function triage(
       outcome: "limited",
       error: earlier ? `${limit.reason}; re-sent the report from lead ${earlier.id}` : limit.reason,
     });
-    if (earlier) await resendEarlier(id, lead, earlier.pdf_url, "limited");
+    if (earlier) await resendEarlier(id, lead, earlier, "limited");
     return "limited";
   }
 
@@ -170,8 +173,8 @@ async function triage(
   //    Checked before the cap: a re-send costs nothing, so it never waits in the queue.
   const earlier = await earlierSent();
   if (earlier) {
-    await resendEarlier(id, lead, earlier.pdf_url, "sent");
-    return "sent";
+    await resendEarlier(id, lead, earlier, "dedupe");
+    return "limited";
   }
 
   // 5. Over the day's service cap: queued for the 7:00 Eastern run; Dan hears once a day.
@@ -192,22 +195,31 @@ async function triage(
   return "processing";
 }
 
-/** Re-sends an earlier PDF; for a dedupe the row becomes `sent` with that PDF once it's out. */
-async function resendEarlier(id: string, lead: DeliverLead, pdfUrl: string, outcome: "sent" | "limited"): Promise<void> {
+/**
+ * Re-sends an earlier PDF. A re-send is never a new report, so the row ends `limited` (not counted
+ * as sent in metrics): for a dedupe it records the PDF and why once the email is out; over the
+ * limit the row is already limited and only gains the email id.
+ */
+async function resendEarlier(
+  id: string, lead: DeliverLead, earlier: { id: string; pdf_url: string }, kind: "dedupe" | "limited",
+): Promise<void> {
   let emailId: string | null;
   try {
-    emailId = await resendReport(lead, pdfUrl);
+    emailId = await resendReport(lead, earlier.pdf_url);
   } catch (e) {
     const error = `re-sending the earlier report failed: ${errText(e)}`;
     console.error(`Homepage fixes lead ${id}: ${error}`);
-    await updateHfLead(id, outcome === "sent" ? { outcome: "failed", error } : { error }).catch(() => {});
+    await updateHfLead(id, kind === "dedupe" ? { outcome: "failed", error } : { error }).catch(() => {});
     await sendAlert("failed", { id, name: lead.name, email: lead.email, site_url: lead.siteUrl, error });
     return;
   }
   // The row keeps the Resend id of the re-send, so its opens and clicks land here.
   const idCol = emailId ? { resend_email_id: emailId } : {};
-  if (outcome === "sent" || emailId) {
-    await updateHfLead(id, outcome === "sent" ? { outcome: "sent", pdf_url: pdfUrl, ...idCol } : idCol).catch((e) => {
+  const patch = kind === "dedupe"
+    ? { outcome: "limited" as const, pdf_url: earlier.pdf_url, error: `re-sent the report from lead ${earlier.id}`, ...idCol }
+    : idCol;
+  if (Object.keys(patch).length) {
+    await updateHfLead(id, patch).catch((e) => {
       console.error(`Homepage fixes lead ${id}: re-sent but not recorded: ${errText(e)}`);
     });
   }
@@ -234,16 +246,24 @@ export async function processLead(leadId: string, opts: { deadlineMs?: number } 
     const cached = await getCachedCapture(domain);
     // The model picked in the admin (app_config llm_model); the default if it can't be read.
     const model = pickModel(await getLiveModel().catch(() => null), process.env.LLM_MODEL);
-    const result = await runHomepageFixes(
-      { firstName: firstWord(row.name), website: row.site_url, goal: lead.goal, model, capture: cached ?? undefined, deadlineMs: opts.deadlineMs },
-      {
-        capture: async (url) => {
-          const c = await captureSite(url);
-          await putCachedCapture(domain, c);
-          return c;
+    let fresh = null as Capture | null; // set by the capture stage (a closure, so no narrowing)
+    let result: PipelineResult;
+    try {
+      result = await runHomepageFixes(
+        {
+          firstName: firstWord(row.name), website: row.site_url, goal: lead.goal, model, capture: cached ?? undefined,
+          deadlineMs: opts.deadlineMs, canRetry: row.retry_count < 1,
         },
-      },
-    );
+        { capture: async (url) => (fresh = await captureSite(url)) },
+      );
+    } catch (e) {
+      // The retry reuses the capture instead of scraping again.
+      if (fresh) await putCachedCapture(domain, fresh);
+      throw e;
+    }
+    // A capture that ended in can't-see (coming soon, too little, no photo, bot check) is never
+    // cached: a person who launches and resubmits gets a fresh look.
+    if (fresh && result.outcome !== "cant_see") await putCachedCapture(domain, fresh);
     // The CLI or another run may have finished this lead meanwhile: never send twice.
     const now = await getHfLead(leadId);
     if (!now || !buildable(now.outcome)) {
@@ -308,7 +328,7 @@ async function resentInstead(id: string): Promise<boolean> {
   if (!earlier) return false;
   const lead: DeliverLead = { name: row.name, email: row.email, siteUrl: row.site_url, goal: row.goal ?? "" };
   await updateHfLead(id, { outcome: "limited", error: `duplicate of lead ${earlier.id}; re-sent its report` });
-  await resendEarlier(id, lead, earlier.pdf_url, "limited");
+  await resendEarlier(id, lead, earlier, "limited");
   return true;
 }
 

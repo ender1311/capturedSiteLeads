@@ -85,7 +85,9 @@ describe("store", () => {
       logo: { data: Buffer.from("logo"), mime: "image/svg+xml" },
     } as unknown as Capture;
     await putCachedCapture("https://www.x.com", c);
-    expect(h.put.mock.calls.map(([p]) => p.replace(/\/\d+-\w+\//, "/U/"))).toEqual([
+    // A random UUID folder (Minor 10).
+    const UUID = /\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\//;
+    expect(h.put.mock.calls.map(([p]) => p.replace(UUID, "/U/"))).toEqual([
       "scrape-cache/x.com/U/before.png", "scrape-cache/x.com/U/logo.svg", "scrape-cache/x.com/U/photo-01.jpg",
     ]);
     const [, domain, json] = h.tag.mock.calls[0];

@@ -2,8 +2,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import { secretMatches } from "@/lib/abuse";
 import { sweep } from "@/lib/homepage-fixes/intake";
 
-// Vercel crons (vercel.json): every 15 minutes re-runs leads in `retrying`; with ?queue=1 at
-// 12:00 UTC (7:00 Eastern standard time) builds queued leads within the day's cap.
+// Vercel crons (vercel.json): every 15 minutes re-runs leads in `retrying`; with ?queue=1 every
+// 15 minutes from 12:00 to 16:45 UTC (from 7:00 Eastern standard time) builds queued leads within
+// the day's cap, about one per run.
 // Vercel sends `Authorization: Bearer ${CRON_SECRET}`; without CRON_SECRET set the route is off.
 
 export const runtime = "nodejs";
