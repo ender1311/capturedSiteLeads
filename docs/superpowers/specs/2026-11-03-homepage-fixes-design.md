@@ -21,7 +21,7 @@ report**.
    the personal slots changed.
 4. Gemini 3.8 Flash (`google/gemini-3.8-flash` through the Vercel AI Gateway) does only the work that
    needs judgment. Average Gemini cost per report under $0.01, measured and stored per lead.
-5. Maggie sees every submission on her dashboard: inputs, outcome, the PDF, and cost.
+5. Maggie and Dan see every submission, the PDFs, cost and the funnel on beaconfrontier.com/admin/site/capturedsites.
 6. **It replaces the old Free Audit "Dream Client Roadmap" report** (Dan, 2026-11-03). Once homepage
    fixes are live:
    - `POST /api/lead` runs the homepage-fixes pipeline too (same handler), so any form still
@@ -294,30 +294,48 @@ A port of `build.mjs`'s checks, plus:
 - Delivery is one shared module (`lib/homepage-fixes/deliver.ts`) used by the route, the crons and
   the CLI.
 
-### 9. Maggie's dashboard
+### 9. The dashboard lives in the Beacon Frontier admin (Dan, 2026-11-03)
 
-The existing `/dashboard` gets a "Homepage Fixes" tab: one row per submission with date, name, email,
-website, goal, outcome, PDF link (and before/after thumbnails), cost, and a detail view showing
-`notes_for_maggie`, the fact sheet and the copy. Homepage Fixes becomes the default tab; old roadmap
-rows move to a read-only "Roadmap history" tab (export keeps working for both, with a `report_type`
-column). Open/click tracking from the Resend webhook
-covers both report types.
+Everything Maggie and Dan look at is on **https://beaconfrontier.com/admin/site/capturedsites**, the
+existing per-site admin page (traffic, goals, marketing, pages, sources, GA4, Google Search). Maggie
+signs in with Google as a **site viewer** (`ADMIN_VIEWERS`, `email:capturedsites`): read-only, that
+one site. The old capturedSiteLeads `/dashboard` redirects there.
 
-**"Email setup" tab** (replaces the old Roadmap Guide tab at `/dashboard/guide`), written for Maggie
-to build her 3 follow-up emails from, in plain words:
-- What the photographer already got and when: the report email (its subject and body, shown as
-  sent), sent the moment the PDF is ready, so her automation starts with a wait, not an Email 1.
-- The group and automation names, the trigger (joins "Website Lead Generator"), and a link to
-  MailerLite automations.
-- Every merge field she can use, each with what it holds and a real example from the latest `sent`
-  lead (e.g. `{$hf_fix1_title}` = "Show couples the fun day they'll have with you"), and the
-  personalization-menu tip from `docs/mailerlite-emails.md`.
-- Who joins with which `hf_outcome`, how many of each in the last 30 days, and a suggestion to add
-  a condition step so hobby and cant_see people don't get "open your fixes" emails.
-- The report's voice rules in short (no dashes, no agency words, "Captured Sites" spelled exactly,
-  homepage only) and the Tour link `https://capturedsites.com/tour/`.
-- Live numbers: opens and clicks on the report email.
-The email provider picker on that page is removed (homepage fixes always use Resend).
+Data flow:
+- **Daily counts** go through the admin's existing product-metrics contract
+  (beacon-frontier `docs/metrics-contract.md`): capturedSiteLeads serves
+  `GET /api/metrics/v1` (aggregates only) and `capturedsites` gets
+  `productApi: { path: "https://captured-site-leads.vercel.app/api/metrics/v1", tokenEnv: "PRODUCT_TOKEN_CAPTUREDSITES" }`.
+- **Lead-level data** (names, emails, goals, PDFs, copy) is never copied into the metrics database.
+  The admin page fetches it live, server to server, from capturedSiteLeads
+  `GET /api/admin/leads…` with a bearer token (`LEADS_API_TOKEN`, same value on both projects).
+  If capturedSiteLeads is down, the section says so and the rest of the page still works.
+
+New "Homepage Fixes" section on the capturedsites page (both roles):
+- Top numbers for the page's date range: submissions, reports sent, couldn't see, hobby, held or
+  failed, average Gemini cost per report, email open rate, click rate, Tour visits from a PDF.
+- Chart: submissions and reports sent per day.
+- Leads table: date, name, email, website, goal, outcome pill, before/after thumbnails, PDF link,
+  cost, opened, clicked. Filter by outcome, search name/email/site, 50 per page.
+- Lead detail page `/admin/site/capturedsites/leads/<id>`: PDF embedded, before and after side by
+  side, goal, every copy field, `notes_for_maggie`, fact sheet, cost and timing, error and issues,
+  email events.
+- **CSV export of leads for both Dan and Maggie** (Dan, 2026-11-03: a deliberate exception to the
+  viewer "no exports" rule, scoped to this one leads export). Audited as `leads export` with role,
+  never the address.
+- Email setup subsection: the guide for Maggie's 3 MailerLite follow-ups (content as before:
+  what was already sent, group and automation, merge fields with live examples, who joins with which
+  `hf_outcome`, voice reminders, report email open/click rates).
+- Admin-only controls (hidden and refused for viewers): report model picker, re-send a held report.
+
+Funnel and attribution:
+- The capturedsites.com header snippet reports `form_submit` with `form: "homepage_fixes"` on the
+  homepage-fixes page; new goal "Homepage Fixes request" and funnel: any page → homepage-fixes page →
+  form sent. Product numbers carry the rest (report sent, opened, clicked).
+- The on-page check script reports `hf_check_blocked` with `field: email | site` through the
+  collector when it blocks a submit.
+- Tour links in the PDF and emails carry `utm_source=homepage-fixes&utm_medium=pdf|email&utm_campaign=homepage-fixes`,
+  so Tour visits from the freebie show in Marketing and Sources.
 
 Held reports: Dan fixes the stored content and runs
 `scripts/homepage-fixes-deliver.mts <lead-id> [edited-content.json]`, which re-renders from the stored

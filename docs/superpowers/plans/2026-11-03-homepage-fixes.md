@@ -62,7 +62,8 @@ app/api/homepage-fixes/route.ts        intake (Task 10)
 app/api/homepage-fixes/check/route.ts  on-page check (Task 9)
 app/api/cron/homepage-fixes/route.ts   queue + retry sweeps (Task 10)
 public/homepage-fixes-check.js         Elementor page snippet (Task 9)
-app/dashboard/...                      tabs (Task 11)
+app/api/metrics/v1, app/api/admin/*    data for the Beacon Frontier admin (Task 11)
+~/projects/beacon-frontier             Homepage Fixes section in /admin/site/capturedsites (Task 11b)
 docs/homepage-fixes-go-live.md         manual steps (Task 12)
 ```
 
@@ -233,6 +234,8 @@ export function firstSectionHtml(s: FirstSection, photoDataUri: string, logoData
 export function fillReport(c: ReportContent, imgs: { before: string; after: string }): string; // data URIs in, full HTML out, assets inlined
 export function contactSheetHtml(before: string, photos: string[]): string; // 1600x900: today on left half, up to 3 photos labeled 1,2,3 on right
 export function pdfFileName(firstName: string): string;            // "your-top-homepage-fixes-<ascii-slug>.pdf"
+// fillReport also rewrites every https://capturedsites.com/tour/ href to
+// https://capturedsites.com/tour/?utm_source=homepage-fixes&utm_medium=pdf&utm_campaign=homepage-fixes
 // render.ts
 export async function renderContactSheet(beforeUri: string, photoUris: string[]): Promise<Buffer>;  // JPEG, 1600x900, quality 80
 export async function renderAfter(s: FirstSection, photoUri: string, logoUri?: string): Promise<Buffer>; // JPEG 1400x878 @2x, quality 90
@@ -426,7 +429,7 @@ export async function sendAlert(kind: "held" | "failed" | "cap", lead: {...}): P
 ```
 
 Email copy (exact; Maggie may edit later; shared shell = the existing `deliveryEmailHtml` styling, without `&mdash;`):
-- **Report** subject `{name}, your homepage fixes are ready`. Body: "Hi {name}," / "Your Top Homepage Fixes are ready. It's your own homepage, with your own photo and words, showing a new first section and two more opportunities to turn more visitors into inquiries." / (attached) "Your fixes are attached to this email, or you can view them online:" / button "See My Homepage Fixes" → pdfUrl / "If you'd love to see what it looks like to have your whole website built this way, I'd love to show you around on a Captured Sites Tour." link `https://capturedsites.com/tour/` / "Talk soon, Maggie, Captured Sites".
+- **Report** subject `{name}, your homepage fixes are ready`. Body: "Hi {name}," / "Your Top Homepage Fixes are ready. It's your own homepage, with your own photo and words, showing a new first section and two more opportunities to turn more visitors into inquiries." / (attached) "Your fixes are attached to this email, or you can view them online:" / button "See My Homepage Fixes" → pdfUrl / "If you'd love to see what it looks like to have your whole website built this way, I'd love to show you around on a Captured Sites Tour." link `https://capturedsites.com/tour/?utm_source=homepage-fixes&utm_medium=email&utm_campaign=homepage-fixes` (same link in the can't-see and hobby emails) / "Talk soon, Maggie, Captured Sites".
 - **Can't see** subject `{name}, a quick note about your homepage fixes`. Body (`couldnt_load`): "Hi {name}," / "Thanks so much for asking for your homepage fixes. My homepage review tool couldn't load your homepage, so I wasn't able to make them this time." / "If your site lives at another address, just reply with the link and I'll take care of it." (`not_live`): "…it looks like your homepage isn't quite live yet, so I wasn't able to make them this time." / "Once it's live, come back to capturedsites.com/homepage-fixes and I'll make them for you." / Tour line / sign-off.
 - **Hobby** subject `{name}, a little note about your website`. Body: "Hi {name}," / "{compliment}" / "It sounds like photography is something you love doing for yourself right now, so I won't fill your inbox with fixes. If it ever grows into something you want to take further, I'd love to help." / sign-off.
 - Alert subject `[Homepage Fixes] {kind}: {name} ({site})` to `ALERT_EMAILS` (default `danluk1311@gmail.com`; add `maggie@capturedsites.com` for `held`), body lists lead id, email, site, error, dashboard link `https://captured-site-leads.vercel.app/dashboard`.
@@ -470,7 +473,7 @@ Route: `GET /api/homepage-fixes/check?email=&site=` (either or both), runs check
 
 Website fetch: `unsafeUrlReason` first; DNS lookup; `GET` with browser UA, `redirect: "follow"`, read ≤ 512 KB; status ≥ 400 → `not_loading` except 403/429/503 with a bot-check body (Cloudflare "Just a moment", "Attention Required") → `ok` (let Firecrawl decide, per spec); placeholder regex `coming soon|under construction|launching soon|maintenance mode|domain (is )?for sale|buy this domain|parked free` on title + first 5,000 text chars.
 
-Snippet `public/homepage-fixes-check.js` (vanilla, no deps, served from the app): finds `form[name="Your Top Homepage Fixes"]`, fields `#form-field-email` and `#form-field-site_url`; on blur and 600 ms after typing stops calls the endpoint for that field; shows the message in a `<div class="hf-check" role="status" aria-live="polite">` under the field (red `#b42318` for blocking, teal `#337A80` for suggestions; typo suggestion is a button that fills the field); disables the submit button until both fields have a passing result for their current value; intercepts `submit` (capture phase) and blocks it if either field is unchecked or failing, running the checks first if unchecked. Network errors, 429 and timeouts count as pass.
+Snippet `public/homepage-fixes-check.js` (vanilla, no deps, served from the app): finds `form[name="Your Top Homepage Fixes"]`, fields `#form-field-email` and `#form-field-site_url`; on blur and 600 ms after typing stops calls the endpoint for that field; shows the message in a `<div class="hf-check" role="status" aria-live="polite">` under the field (red `#b42318` for blocking, teal `#337A80` for suggestions; typo suggestion is a button that fills the field); disables the submit button until both fields have a passing result for their current value; intercepts `submit` (capture phase) and blocks it if either field is unchecked or failing, running the checks first if unchecked. When it blocks a submit and `window.bfm` exists, it calls `window.bfm("hf_check_blocked", { field: "email" | "site" })` (Beacon Frontier collector). Network errors, 429 and timeouts count as pass.
 
 - [ ] **Step 1: Write failing tests** for every code above with injected deps (no network), `withDeadline` timing (fake timers), CORS allow/deny, OPTIONS, rate limit 31st request → 429, and the route answering under 3 s when a dep hangs (fake timers).
 - [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS. Manually: `npm run dev`, open a local HTML file that copies the live form markup (save it from `https://capturedsites.com/homepage-fixes/`) plus `<script src="http://localhost:3000/homepage-fixes-check.js">`, confirm: `bob@gmial.com` suggests gmail; `bob@nodomain-xyz123.com` blocks; `example.invalid` blocks; `gabbyjphotography.com` passes; submit button state follows.
@@ -511,29 +514,59 @@ CLI `homepage-fixes-deliver.mts <lead-id> [edited-content.json]`: loads the row,
 
 ---
 
-### Task 11: Dashboard, and retiring the roadmap generator
+### Task 11: capturedSiteLeads data APIs, and retiring the roadmap generator and old dashboard
+
+The dashboard moves to the Beacon Frontier admin (Task 11b). This task gives the admin its data and removes the old UI.
 
 **Files:**
-- Create: `app/dashboard/homepage-fixes-table.tsx`, `app/dashboard/[id]/page.tsx` (detail), `app/dashboard/emails/page.tsx` (Email setup), `app/dashboard/history/page.tsx` (Roadmap history)
-- Modify: `app/dashboard/page.tsx` (Homepage Fixes is the default view: filter `report_type = 'homepage_fixes'`), `app/dashboard/nav-tabs.tsx` (tabs: Homepage Fixes `/dashboard`, Email setup `/dashboard/emails`, Roadmap history `/dashboard/history`), `app/api/leads/export` (add `report_type`, `goal`, `outcome`, `cost_usd` columns), `app/api/model/route.ts` + model picker (moved to Email setup page footer as "Report model")
-- Delete: `lib/report.ts`, `lib/template.ts`, `lib/template-assets.ts`, `lib/agent-guide.ts`, `app/dashboard/guide/`, `app/api/guide/`, `app/api/test-generate/`, `app/api/email-provider/` and the guide/provider functions in `lib/guide-store.ts` (keep `getLiveModel`/`saveModel`), `lib/email-template.ts` roadmap copy (move the shared shell into `lib/homepage-fixes/emails.ts`)
-- Test: `app/dashboard/emails/fields.test.ts`
+- Create: `app/api/metrics/v1/route.ts`, `app/api/admin/leads/route.ts` (list + CSV), `app/api/admin/leads/[id]/route.ts` (detail), `app/api/admin/leads/[id]/resend/route.ts`, `app/api/admin/model/route.ts`, `app/api/admin/email-setup/route.ts`, `lib/homepage-fixes/admin-data.ts`
+- Modify: `proxy.ts` (exempt `/api/metrics/v1` and `/api/admin/*`: they use bearer tokens), `lib/models.ts` (unchanged ids from Task 6), `next.config.ts` (tracing for the resend route)
+- Replace: `app/dashboard/**` with one `app/dashboard/page.tsx` that redirects (308) to `https://beaconfrontier.com/admin/site/capturedsites`; remove `app/dashboard/guide/`, `leads-table.tsx`, `nav-tabs.tsx`, `sw-register.tsx`
+- Delete: `lib/report.ts`, `lib/template.ts`, `lib/template-assets.ts`, `lib/agent-guide.ts`, `lib/email-template.ts` (after `lib/mailerlite.ts` no longer imports it), `app/api/guide/`, `app/api/test-generate/`, `app/api/email-provider/`, `app/api/leads/` (old export), guide/provider functions in `lib/guide-store.ts` (keep `getLiveModel`/`saveModel`), `htmlToPdf` in `lib/pdf.ts` if unused
+- Test: `lib/homepage-fixes/admin-data.test.ts`, `app/api/metrics/v1/route.test.ts`, `app/api/admin/leads/route.test.ts`
 
-**Spec for the screens** (match the existing dashboard styling: zinc cards, teal `#337a80` accents):
-- **Homepage Fixes table:** columns Date, Name, Email, Website (link), Goal (truncate 60 chars, full on hover), Outcome (colored pill: sent green, hobby/cant_see amber, held/failed red, others zinc), PDF (link), Cost (`$0.0091` format), Opens/Clicks. Stats row: Reports sent (30 days), Not a fit / couldn't see, Held or failed, Average Gemini cost (30 days).
-- **Detail page:** before.jpg and after.jpg side by side, `notes_for_maggie`, goal, all copy fields, the fact sheet in a `<pre>`, outcome and error, cost breakdown, and for `held` the issues list plus the CLI command to send it (`npx tsx scripts/homepage-fixes-deliver.mts <id>`).
-- **Email setup page** (for Maggie, plain words, top to bottom):
-  1. "What they've already received": the report email subject and body rendered from `reportEmail("Gabby", "#", true)`, with "Sent the moment their PDF is ready, so your automation should start with a wait, not an email."
-  2. "Where your follow-ups run": group "Website Lead Generator", automation "Lead Generator Follow-ups", trigger "joins group", link `https://dashboard.mailerlite.com/automations`.
-  3. "Fields you can use": table of `{$name}`, `{$site_url}`, `{$pdf_url}`, `{$goal}`, `{$hf_outcome}`, `{$hf_headline}`, `{$hf_fix1_title}`, `{$hf_fix2_title}`, `{$hf_sent_date}` with what each holds and the value from the latest `sent` lead; then the personalization-menu tip from `docs/mailerlite-emails.md`.
-  4. "Who joins": counts by `hf_outcome` for the last 30 days, and "Add a condition step on hf_outcome = sent before any email that talks about their fixes, so people who got a hobby or couldn't-load note don't get them."
-  5. "Voice reminders": no dashes, no agency words (list), "Captured Sites" spelled exactly, homepage only, Tour link `https://capturedsites.com/tour/`.
-  6. "How the report email is doing": opens and clicks rate for the last 30 days.
-- **Roadmap history:** the old leads table, read-only, filter `report_type = 'roadmap'`.
+**Interfaces (consumed by Task 11b):**
+- Auth: `Authorization: Bearer <token>`. `/api/metrics/v1` uses `PRODUCT_TOKEN_CAPTUREDSITES`; `/api/admin/*` uses `LEADS_API_TOKEN`. Constant-time compare (`secretMatches`). Missing env or wrong token → 404 (fail closed, like the admin). Responses `Cache-Control: no-store`.
+- `GET /api/metrics/v1?from&to&granularity=day` → exactly the beacon-frontier contract v1 (`docs/metrics-contract.md` in `~/projects/beacon-frontier`): `app: "capturedsites"`; counters `hf_submissions`, `hf_sent`, `hf_hobby`, `hf_cant_see`, `hf_held_failed`, `hf_invalid_limited`, `hf_opened`, `hf_clicked`, `hf_gemini_microusd` (sum of cost_usd × 1,000,000, rounded); gauges `hf_reports_total`; zero-filled series; health `pipeline` (`fail` if more than 20% of the last 24 h's finished leads are held/failed, `warn` if any, else `ok`; detail numbers only). No names, emails, URLs or free text anywhere.
+- `GET /api/admin/leads?from&to&outcome&q&page&format=json|csv` → json `{ total, page, pageSize: 50, rows: LeadRow[] }`; csv columns `created_at,name,email,site_url,goal,outcome,pdf_url,cost_usd,opens,clicks,headline,fix1_title,fix2_title,report_type`, RFC 4180 quoting, leading `=+-@` cells prefixed with `'` (CSV injection). Includes old roadmap rows when `outcome=roadmap` (report_type roadmap), else homepage_fixes only.
+  `LeadRow = { id, created_at, name, email, site_url, goal, outcome, pdf_url, before_url, after_url, cost_usd, opens, clicks }`.
+- `GET /api/admin/leads/:id` → `LeadRow & { content, facts_sheet, notes_for_maggie, error, issues, model, input_tokens, output_tokens, retry_count, report_type }`.
+- `GET /api/admin/leads/summary?from&to` (in the list route via `?summary=1`) → `{ submissions, sent, cant_see, hobby, held_failed, avg_cost_usd, open_rate, click_rate, perDay: {date, submissions, sent}[] }`.
+- `GET /api/admin/email-setup` → `{ reportEmail: {subject, html}, group: "Website Lead Generator", automation: "Lead Generator Follow-ups", fields: {tag, holds, example}[], outcomes30d: Record<HfOutcome, number>, open_rate30d, click_rate30d }` (fields list and wording from the spec's Email setup subsection).
+- `POST /api/admin/model {model}` (must be in `MODEL_OPTIONS`) and `GET` → `{ model, options }`.
+- `POST /api/admin/leads/:id/resend` → re-runs delivery for a `held` lead from stored content (same as the Task 10 CLI without edits), refuses other outcomes with 409.
 
-- [ ] **Step 1: Write failing test** `fields.test.ts`: `emailSetupFields(latestLead)` returns the 9 fields in order, each with a non-empty description, and example values taken from the lead's `content` (`hf_fix1_title` = `content.fixes[0].title`).
-- [ ] **Step 2:** Run → FAIL. **Step 3:** Implement screens and deletions. **Step 4:** `npm run check` → PASS (no imports of deleted files remain: `grep -rn "agent-guide\|lib/report\|lib/template" app lib` returns nothing). Run `npm run dev`, sign in, and view all three tabs and one detail page with the Task 10 test lead.
-- [ ] **Step 5: Commit** `feat(dashboard): Homepage Fixes, Email setup and Roadmap history; retire roadmap generator`.
+- [ ] **Step 1: Write failing tests:** contract shape (version 1, zero-filled series across the range, every metric id `[a-z0-9_]{1,64}`, all values non-negative integers, and a deep scan asserting no string value in the body contains `@` or `http`); wrong/missing token → 404; CSV quoting and injection guard (`=HYPERLINK(...)` name → `'=HYPERLINK(...)`); list filters by outcome and `q` (name/email/site, case-insensitive); summary rates (opens > 0 counts as opened); model POST rejects unknown id; resend refuses non-held with 409.
+- [ ] **Step 2:** Run → FAIL. **Step 3:** Implement; then do the deletions. **Step 4:** `npm run check` → PASS and `grep -rn "agent-guide\|lib/report\|lib/template\|email-template" app lib` returns nothing. Locally: `curl -H "Authorization: Bearer $PRODUCT_TOKEN_CAPTUREDSITES" "localhost:3000/api/metrics/v1?from=2026-11-01&to=2026-11-03&granularity=day"` returns valid JSON.
+- [ ] **Step 5: Commit** `feat: admin data APIs for Beacon Frontier; retire roadmap generator and old dashboard`.
+
+---
+
+### Task 11b: The Homepage Fixes section in the Beacon Frontier admin (repo `~/projects/beacon-frontier`)
+
+Work on a new branch `feat/capturedsites-homepage-fixes` in `~/projects/beacon-frontier`. Read its `README.md`, `docs/admin.md` and `docs/metrics-contract.md` first and follow its patterns (server components, `src/app/admin/ui.tsx` primitives, `admin.css`, `requireSite`, `adminRequest`, `audit`).
+
+**Files:**
+- Create: `src/admin/leads.ts` (server-only client for the capturedSiteLeads admin API: `LEADS_API_URL` default `https://captured-site-leads.vercel.app`, `LEADS_API_TOKEN`, 8 s timeout, typed results, errors as values), `src/app/admin/homepage-fixes-panel.tsx`, `src/app/admin/site/[id]/leads/[leadId]/page.tsx`, `src/app/api/admin/leads/export/route.ts`, `src/app/api/admin/leads/model/route.ts`, `src/app/api/admin/leads/resend/route.ts`
+- Modify: `src/metrics/sites.ts` (`capturedsites`: `productApi` with full URL path per the spec, event `form_submit` form values add `"homepage_fixes"`, new event `hf_check_blocked` with prop `field: ["email","site"]`, goal `{ id: "homepage_fixes", label: "Homepage Fixes request", event: "form_submit", where: { form: "homepage_fixes" } }`, funnel `homepage_fixes`: Any page → pageview `/^\/homepage-fixes\/?$/` → form_submit homepage_fixes; make it `primaryGoal`), `src/metrics/server/product.ts` (accept an absolute `productApi.path` URL in addition to a path on the site domain), `src/app/admin/site/[id]/page.tsx` (render `<Section id="homepage-fixes" title="Homepage Fixes">` near the top for `capturedsites` only, and add it to the section nav), `src/admin/audit.ts` (actions `leads view`, `leads export`, `leads resend`, `leads model`), CSP in `src/admin/csp.ts` (allow `img-src` and `frame-src` `https://*.public.blob.vercel-storage.com` on admin pages only), `docs/metrics.md` (Captured Sites snippet: `sent(location.pathname.indexOf("/homepage-fixes") === 0 ? "homepage_fixes" : …)`), `docs/admin.md` (the leads section, the CSV exception, the two new env vars), `.env.example` (`LEADS_API_URL`, `LEADS_API_TOKEN`, `PRODUCT_TOKEN_CAPTUREDSITES`)
+- Test: `src/admin/leads.test.ts`, extend `src/app/admin/render.test.tsx`, `src/admin/auth.test.ts` / `page-auth.test.ts` for the new routes
+
+**Access rules (server-enforced):**
+- Section, lead detail page and leads CSV export: full admin and a viewer of `capturedsites`. A viewer of any other site → 404.
+- Leads CSV export is the one export a viewer may use (Dan, 2026-11-03); every other export stays admin-only.
+- Model picker and re-send: full admin only; viewer → 404. POSTs follow the admin CSRF rules (`sameOrigin`).
+- The leads export route streams the capturedSiteLeads CSV through with `content-disposition: attachment; filename="capturedsites-leads-<from>-<to>.csv"` and audits `leads export` (role, row count; never an address).
+
+**Screen spec** (use existing admin styling; this page is dense and data-first):
+- Top: stat tiles (Submissions, Reports sent, Couldn't see, Hobby, Held or failed, Avg Gemini cost, Open rate, Click rate, Tour visits from PDF = sessions with `utm_source=homepage-fixes` in range from the collector). Under them a line chart of submissions vs reports sent per day (use the existing `LineChart`).
+- Leads table: columns as in the spec; outcome pill colors from the admin palette (ok green for sent; warn for hobby/cant_see/limited/queued; bad for held/failed); thumbnails 64px wide linking to the detail page; filter chips per outcome; search box (GET form, `q`); pager; "Download CSV" link (respects filters). Old roadmap leads appear only under a "Roadmap (old)" chip.
+- Lead detail: header (name, email as `mailto:`, site link, date, outcome pill), PDF in an `<iframe>` 100% wide × 900px with a "Open PDF" link, before/after images side by side, goal, the first section copy and the three change notes, both fixes, notes for Maggie, fact sheet in `<pre>`, cost (in/out tokens, $), model, retries, error/issues, email opens/clicks. Admin only: "Re-send" button for held leads.
+- Email setup card (collapsible `<details>`, open by default for viewers): content from `GET /api/admin/email-setup`.
+- When the leads API fails: one `adm-empty` alert line "Couldn't reach the leads service (<error>)." and the rest of the page renders.
+
+- [ ] **Step 1: Write failing tests:** leads client handles 404/timeout as an error value; viewer of capturedsites can GET the section, detail page and leads export; viewer of capturedsites gets 404 on model and resend and on every other export; viewer of another site gets 404 on all leads routes; export sets the attachment filename and audits without the email; product pull accepts an absolute productApi URL; render test shows the section only on capturedsites; CSP for admin pages contains the blob host in `img-src` and `frame-src`.
+- [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** `npm run check` in beacon-frontier → PASS (needs local Postgres per its README). Run `npm run dev` with `LEADS_API_URL=http://localhost:3000` against capturedSiteLeads on another port and view the section and a detail page as the admin.
+- [ ] **Step 5: Commit** `Captured Sites admin: Homepage Fixes leads, PDFs, funnel and CSV`.
 
 ---
 
@@ -547,7 +580,8 @@ CLI `homepage-fixes-deliver.mts <lead-id> [edited-content.json]`: loads the row,
 1. Neon: run the Task 8 schema block in the SQL editor; confirm with `\d leads`.
 2. MailerLite: `npx tsx scripts/mailerlite-hf-fields.mts`.
 3. Resend: in the capturedsites.com domain's Configuration tab, confirm Open and Click tracking are on; confirm the webhook to `/api/webhook/resend` exists.
-4. Vercel env: `CRON_SECRET`, `HOMEPAGE_FIXES_DAILY_CAP=100`, `ALERT_EMAILS`; set the live model to `google/gemini-3.8-flash` on the dashboard.
+4. Vercel env: capturedSiteLeads `CRON_SECRET`, `HOMEPAGE_FIXES_DAILY_CAP=100`, `ALERT_EMAILS`, `PRODUCT_TOKEN_CAPTUREDSITES`, `LEADS_API_TOKEN` (generate each with `openssl rand -base64 48`); beacon-frontier `PRODUCT_TOKEN_CAPTUREDSITES`, `LEADS_API_TOKEN` (same values), `LEADS_API_URL`. Confirm `ADMIN_VIEWERS` contains `maggie@capturedsites.com:capturedsites` (and her Gmail if she signs in with it). Set the report model to `google/gemini-3.8-flash` in the admin.
+4b. capturedsites.com header snippet: update per beacon-frontier `docs/metrics.md` so the homepage-fixes form reports `homepage_fixes`.
 5. Elementor, homepage-fixes page: Actions After Submit → Webhook `https://captured-site-leads.vercel.app/api/homepage-fixes?secret=<LEAD_WEBHOOK_SECRET>`; Advanced Data ON; add Honeypot field; remove any MailerLite action; success message "You're all set. Your homepage fixes are being made right now, check your inbox in a few minutes."; add an HTML widget anywhere on the page with `<script src="https://captured-site-leads.vercel.app/homepage-fixes-check.js" defer></script>`.
 6. Test with a real submission to Dan's email; confirm PDF, dashboard row, MailerLite subscriber fields.
 7. Pre-launch: 10-site batch with `scripts/homepage-fixes-run.mts`, PDFs to Maggie for review.
