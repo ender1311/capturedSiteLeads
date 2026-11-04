@@ -20,11 +20,14 @@ async function ml(path: string, init?: RequestInit): Promise<Response> {
 
 // Upserts the subscriber with report fields and adds them to the main group
 // (which will trigger the nurture automation once it's enabled in MailerLite).
+// `fields` adds extra custom fields (the homepage-fixes hf_* set) on top of the
+// three base ones.
 export async function addSubscriber(input: {
   name: string;
   email: string;
   siteUrl: string;
   pdfUrl: string;
+  fields?: Record<string, string>;
 }): Promise<void> {
   await ml("/subscribers", {
     method: "POST",
@@ -34,19 +37,35 @@ export async function addSubscriber(input: {
         name: input.name,
         site_url: input.siteUrl,
         pdf_url: input.pdfUrl,
+        ...input.fields,
       },
       groups: [process.env.MAILERLITE_GROUP_ID],
     }),
   });
 }
 
+const UNSUBSCRIBE_FOOTER =
+  `<p style="margin-top:24px;font-size:12px;color:#9db6b5;text-align:center"><a href="{$unsubscribe}" style="color:#9db6b5">Unsubscribe</a></p>`;
+
+// Puts the unsubscribe footer inside the card (before its closing </div>) when
+// the caller's HTML doesn't already carry MailerLite's {$unsubscribe} tag.
+function withUnsubscribe(html: string): string {
+  if (html.includes("{$unsubscribe}")) return html;
+  const at = html.lastIndexOf("</div>");
+  return at >= 0 ? html.slice(0, at) + UNSUBSCRIBE_FOOTER + html.slice(at) : html + UNSUBSCRIBE_FOOTER;
+}
+
 // Sends the PDF-delivery email immediately via a single-recipient campaign.
 // The automation-email API can't write bodies, so campaigns are the only
 // fully-API path; each send uses a throwaway group that is deleted after.
+// Pass `subject` and `html` to send other copy (homepage fixes) instead of the
+// roadmap email; the unsubscribe link MailerLite requires is added if missing.
 export async function sendPdfEmail(input: {
   name: string;
   email: string;
   pdfUrl: string;
+  subject?: string;
+  html?: string;
 }): Promise<void> {
   const from = process.env.MAILERLITE_FROM_EMAIL || "jetluk+adam@gmail.com";
   const fromName = process.env.MAILERLITE_FROM_NAME || "Maggie | Captured Sites";
@@ -66,20 +85,19 @@ export async function sendPdfEmail(input: {
     const campaignRes = await ml("/campaigns", {
       method: "POST",
       body: JSON.stringify({
-        name: `Roadmap delivery — ${input.email}`.slice(0, 250),
+        name: `${input.html ? "Homepage fixes delivery" : "Roadmap delivery"} — ${input.email}`.slice(0, 250),
         type: "regular",
         groups: [groupId],
         emails: [
           {
-            subject: deliverySubject(input.name),
+            subject: input.subject ?? deliverySubject(input.name),
             from_name: fromName,
             from,
             reply_to: from,
             // MailerLite requires an unsubscribe link in campaign content
-            content: deliveryEmailHtml(input.name, input.pdfUrl, {
-              footerHtml:
-                `<p style="margin-top:24px;font-size:12px;color:#9db6b5;text-align:center"><a href="{$unsubscribe}" style="color:#9db6b5">Unsubscribe</a></p>`,
-            }),
+            content: input.html
+              ? withUnsubscribe(input.html)
+              : deliveryEmailHtml(input.name, input.pdfUrl, { footerHtml: UNSUBSCRIBE_FOOTER }),
           },
         ],
       }),

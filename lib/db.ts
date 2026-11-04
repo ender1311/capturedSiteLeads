@@ -23,6 +23,17 @@ export type Lead = {
   opens: number;
   clicks: number;
   created_at: string;
+  // Homepage fixes columns (db/schema.sql, 2026-11-03). Roadmap rows keep the defaults.
+  report_type: "roadmap" | "homepage_fixes";
+  goal: string | null;
+  outcome: string | null;
+  content: unknown;
+  before_url: string | null;
+  after_url: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cost_usd: string | null; // numeric comes back from Neon as a string
+  retry_count: number;
 };
 
 // Atomically bump opens/clicks for a lead by email (used by the MailerLite and

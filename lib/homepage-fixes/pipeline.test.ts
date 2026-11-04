@@ -308,8 +308,9 @@ describe("runHomepageFixes", () => {
       return { now, write };
     }
 
-    it("skips the repair when under 60 s are left → held out of time", async () => {
-      const { now, write } = slowWrite(215_000, { ...structuredClone(REPORT), headline: "Elevate Your Story" });
+    it("skips the repair when under 120 s are left → held out of time", async () => {
+      // 270 s budget, 160 s spent: 110 s left, under the 120 s cutoff.
+      const { now, write } = slowWrite(160_000, { ...structuredClone(REPORT), headline: "Elevate Your Story" });
       const { stages, spies } = fakes({ now, write });
       const r = await runHomepageFixes(INPUT, stages);
       expect(spies.repair).not.toHaveBeenCalled();

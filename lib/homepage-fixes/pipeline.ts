@@ -27,9 +27,10 @@ const REAL: Stages = {
   renderAfter, renderPdf, renderContactSheet, now: () => Date.now(),
 };
 
-// The route has 300 s; stop starting optional steps when less than a minute of the budget is left.
+// The route has 300 s; stop starting optional steps when less than two minutes of the budget are
+// left, so delivery (Blob uploads, Resend, MailerLite, the row update) still fits.
 export const DEFAULT_DEADLINE_MS = 270_000;
-const MIN_LEFT_MS = 60_000;
+const MIN_LEFT_MS = 120_000;
 const NEXT_PHOTO_FOCUS = "50% 40%";
 
 const ZERO: Usage = { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 };
