@@ -16,14 +16,14 @@ export const MODEL_OPTIONS: ModelOption[] = [
   {
     id: "google/gemini-3.8-flash",
     label: "Gemini 3.8 Flash (default)",
-    description: "Writes the homepage fixes report.",
+    description: "Best balance for these reports: reads the screenshot well and writes in Maggie's voice. About 1 cent per report.",
     inputPerToken: 0.00000075,
     outputPerToken: 0.00000375,
   },
   {
     id: "google/gemini-3.5-flash-lite",
-    label: "Gemini 3.5 Flash-Lite",
-    description: "Cheaper Gemini option.",
+    label: "Gemini 3.5 Flash-Lite (cheaper)",
+    description: "About half the cost, but a weaker writer. Use only if cost matters more than copy quality.",
     inputPerToken: 0.0000003,
     outputPerToken: 0.0000025,
   },

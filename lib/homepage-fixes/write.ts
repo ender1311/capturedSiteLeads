@@ -1,8 +1,8 @@
-import { generateObject, type LanguageModel } from "ai";
+import { generateObject, NoObjectGeneratedError, type LanguageModel } from "ai";
 import { z } from "zod";
 import { DEFAULT_MODEL, MODEL_OPTIONS } from "@/lib/models";
 import type { Facts } from "./facts";
-import { SYSTEM_PROMPT, userMessage } from "./prompt";
+import { clampPhotos, SYSTEM_PROMPT, userMessage } from "./prompt";
 import { fieldsOf, LIMITS, type RuleIssue } from "./rules";
 import type { Fix, Layout, ReportContent, Usage } from "./types";
 
@@ -25,7 +25,7 @@ const fixSchema = z.object({ title: z.string(), noticed: z.string(), why: z.stri
 const reportSchema = z.object({
   fit: z.enum(["report"]),
   photo_choice: z.number().int().min(1).max(3).transform((n) => n as 1 | 2 | 3),
-  photo_focus: z.string().describe('CSS background-position, like "50% 35%"'),
+  photo_focus: z.string(),
   alt_photo_focus: z.string(),
   layout,
   alt_layout: layout,
@@ -39,15 +39,63 @@ const reportSchema = z.object({
 });
 const hobbySchema = z.object({ fit: z.enum(["hobby"]), compliment: z.string() });
 
+// The validated result shape. The model itself gets the flat wireSchema below.
 export const writtenSchema: z.ZodType<Written> = z.union([reportSchema, hobbySchema]);
 
-// Lowest-cost Gemini settings, passed through by the AI Gateway to Google.
+const REPORT_FIELDS = [
+  "photo_choice", "photo_focus", "alt_photo_focus", "layout", "alt_layout", "eyebrow", "headline", "subline",
+  "button", "first_section_changes", "fixes", "notes_for_maggie",
+] as const;
+
+// One flat object (no root anyOf): every report field optional, checked after generation.
+function wireSchema(photoCount: number) {
+  return z.object({
+    fit: z.enum(["report", "hobby"]),
+    compliment: z.string().optional(),
+    photo_choice: z.number().int().min(1).max(photoCount).optional(),
+    photo_focus: z.string().describe('CSS background-position, like "50% 35%"').optional(),
+    alt_photo_focus: z.string().optional(),
+    layout: layout.optional(),
+    alt_layout: layout.optional(),
+    eyebrow: z.string().optional(),
+    headline: z.string().optional(),
+    subline: z.string().optional(),
+    button: z.string().optional(),
+    first_section_changes: z.array(z.string()).length(3).optional(),
+    fixes: z.array(z.object({ title: z.string(), noticed: z.string(), why: z.string(), changes: z.array(z.string()).length(3) })).length(2).optional(),
+    notes_for_maggie: z.string().optional(),
+  });
+}
+type Wire = z.infer<ReturnType<typeof wireSchema>>;
+
+// Gemini picked a fit but left out fields that fit needs. The caller may retry once.
+export class WrittenIncompleteError extends Error {
+  constructor(public readonly fit: "report" | "hobby", public readonly missing: string[]) {
+    super(`Gemini returned fit "${fit}" without: ${missing.join(", ")}`);
+    this.name = "WrittenIncompleteError";
+  }
+}
+
+export function toWritten(o: Wire): Written {
+  if (o.fit === "hobby") {
+    if (!o.compliment?.trim()) throw new WrittenIncompleteError("hobby", ["compliment"]);
+    return { fit: "hobby", compliment: o.compliment };
+  }
+  const missing = REPORT_FIELDS.filter((k) => o[k] === undefined);
+  if (missing.length) throw new WrittenIncompleteError("report", [...missing]);
+  const { compliment: _c, ...report } = o;
+  void _c;
+  return writtenSchema.parse(report);
+}
+
+// Lowest-cost Gemini settings, passed through by the AI Gateway to Google. Gemini counts thinking
+// against maxOutputTokens. Google advises Gemini 3 at the default temperature, so none is set.
 // NOT YET CONFIRMED LIVE: on 2026-11-03 the gateway refused the model ("Free tier users do not have
-// access to this model"). If thinkingLevel "low" is rejected, try "minimal", then omit it.
-const PROVIDER_OPTIONS = {
-  google: { mediaResolution: "MEDIA_RESOLUTION_LOW", thinkingConfig: { thinkingLevel: "low" } },
-};
-const TEMPERATURE = 0.4;
+// access to this model"). If a thinkingLevel is rejected, try "minimal", then omit it.
+type ThinkingLevel = "low" | "minimal";
+const providerOptions = (thinkingLevel: ThinkingLevel) => ({
+  google: { mediaResolution: "MEDIA_RESOLUTION_LOW", thinkingConfig: { thinkingLevel } },
+});
 
 type ModelArg = string | Exclude<LanguageModel, string>;
 const modelId = (m: ModelArg) => (typeof m === "string" ? m : m.modelId);
@@ -69,41 +117,74 @@ export function addUsage(a: Usage, b: Usage): Usage {
 const ZERO: Usage = { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 };
 
 function usageOf(
-  r: { usage: { inputTokens?: number; outputTokens?: number }; providerMetadata?: Record<string, Record<string, unknown>> },
+  r: { usage?: { inputTokens?: number; outputTokens?: number }; providerMetadata?: Record<string, Record<string, unknown>> },
   model: ModelArg,
 ): Usage {
-  const inputTokens = r.usage.inputTokens ?? 0;
-  const outputTokens = r.usage.outputTokens ?? 0;
+  const inputTokens = r.usage?.inputTokens ?? 0;
+  const outputTokens = r.usage?.outputTokens ?? 0;
   const gatewayCost = Number(r.providerMetadata?.gateway?.cost);
   const costUsd = Number.isFinite(gatewayCost) && gatewayCost > 0 ? gatewayCost : costOf({ inputTokens, outputTokens }, modelId(model));
   return { inputTokens, outputTokens, costUsd, calls: 1 };
 }
 
+// A failed attempt still costs money: carry its usage so the retry can add it.
+class AttemptError extends Error {
+  constructor(public readonly cause: unknown, public readonly usage: Usage) {
+    super(cause instanceof Error ? cause.message : String(cause));
+  }
+}
+
 export async function writeReport(input: {
-  firstName: string; website: string; goal: string; facts: Facts; contactSheet: Buffer; model?: ModelArg;
+  firstName: string; website: string; goal: string; facts: Facts; contactSheet: Buffer; photoCount: number; model?: ModelArg;
 }): Promise<{ written: Written; usage: Usage }> {
   const model = input.model ?? DEFAULT_MODEL;
-  const r = await generateObject({
-    model,
-    schema: writtenSchema,
-    system: SYSTEM_PROMPT,
-    messages: [{
-      role: "user",
-      content: [
-        { type: "text", text: userMessage(input) },
-        { type: "file", data: input.contactSheet, mediaType: "image/jpeg" },
-      ],
-    }],
-    maxOutputTokens: 2000,
-    temperature: TEMPERATURE,
-    providerOptions: PROVIDER_OPTIONS,
-  });
-  return { written: r.object, usage: usageOf(r, model) };
+  const photoCount = clampPhotos(input.photoCount);
+  const attempt = async (thinkingLevel: ThinkingLevel) => {
+    let r;
+    try {
+      r = await generateObject({
+        model,
+        schema: wireSchema(photoCount),
+        system: SYSTEM_PROMPT,
+        messages: [{
+          role: "user",
+          content: [
+            { type: "text", text: userMessage({ ...input, photoCount }) },
+            { type: "file", data: input.contactSheet, mediaType: "image/jpeg" },
+          ],
+        }],
+        maxOutputTokens: 2000,
+        providerOptions: providerOptions(thinkingLevel),
+      });
+    } catch (e) {
+      if (NoObjectGeneratedError.isInstance(e)) throw new AttemptError(e, usageOf({ usage: e.usage }, model));
+      throw e;
+    }
+    const usage = usageOf(r, model);
+    try {
+      return { written: toWritten(r.object), usage };
+    } catch (e) {
+      throw new AttemptError(e, usage);
+    }
+  };
+
+  try {
+    return await attempt("low");
+  } catch (e) {
+    // Truncated or incomplete output (thinking can eat the 2000-token cap): retry once with less thinking.
+    if (!(e instanceof AttemptError)) throw e;
+    try {
+      const second = await attempt("minimal");
+      return { written: second.written, usage: addUsage(e.usage, second.usage) };
+    } catch (e2) {
+      throw e2 instanceof AttemptError ? e2.cause : e2;
+    }
+  }
 }
 
 // ---------- repair ----------
 
-const REPAIR_SYSTEM = `You fix single lines of copy for Captured Sites' "Your Top Homepage Fixes" report, written in Maggie's warm, plain voice to a photographer as "you". For each field, rewrite only what the listed problems need and keep the meaning, the voice and any of their exact quoted words. Stay under each field's character limit.
+const REPAIR_SYSTEM = `You fix single lines of copy for Captured Sites' "Your Top Homepage Fixes" report, written in Maggie's warm, plain voice to a photographer as "you". For each field, rewrite only what the listed problems need and keep the meaning and the voice. Keep any exact quote from their site unchanged, even if it contains "her", "!" or a price. Stay under each field's character limit.
 Rules: no em or en dashes; no brackets or fill-ins; website visitors are "the visitor" with they/their; no technical numbers; no exclamation points outside their quotes; homepage only; never recommend pricing; no email list, newsletter or freebie advice; never use audit, conversion, funnel, optimize, leverage, elevate, seamless, curated, aligned, authentic, autopilot, unlock, game changer, synergy, delve, robust or crucial; spell "Captured Sites" exactly. If a quote was not found on their homepage, drop the quotation marks and say it plainly in your own words. Never invent facts.
 Return every field you were given, with its label unchanged.`;
 
@@ -138,7 +219,7 @@ export async function repairFields(input: {
   const current = new Map(fieldsOf(input.content));
   const problems = new Map<string, string[]>();
   for (const i of input.issues) {
-    if (!current.has(i.field)) continue;
+    if (i.level !== "error" || !current.has(i.field)) continue;
     problems.set(i.field, [...(problems.get(i.field) ?? []), i.message]);
   }
   if (problems.size === 0) return { content: input.content, usage: { ...ZERO } };
@@ -154,9 +235,8 @@ export async function repairFields(input: {
     schema: repairSchema,
     system: REPAIR_SYSTEM,
     prompt: list,
-    maxOutputTokens: 1000,
-    temperature: TEMPERATURE,
-    providerOptions: PROVIDER_OPTIONS,
+    maxOutputTokens: 1500,
+    providerOptions: providerOptions("minimal"),
   });
 
   const content = structuredClone(input.content);
@@ -188,9 +268,8 @@ export async function lookCheck(after: Buffer, model: ModelArg = DEFAULT_MODEL):
         { type: "file", data: after, mediaType: "image/jpeg" },
       ],
     }],
-    maxOutputTokens: 200,
-    temperature: TEMPERATURE,
-    providerOptions: PROVIDER_OPTIONS,
+    maxOutputTokens: 1000,
+    providerOptions: providerOptions("minimal"),
   });
   const o = r.object;
   return { ...o, ok: o.faces_ok && o.headline_readable && !o.looks_like_template, usage: usageOf(r, model) };

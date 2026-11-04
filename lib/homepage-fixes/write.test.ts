@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { MockLanguageModelV3 } from "ai/test";
 import { SYSTEM_PROMPT, userMessage } from "./prompt";
-import { addUsage, costOf, lookCheck, repairFields, writeReport } from "./write";
+import { addUsage, costOf, lookCheck, repairFields, writeReport, WrittenIncompleteError } from "./write";
 import type { Facts } from "./facts";
 import type { ReportContent } from "./types";
 
@@ -61,6 +61,30 @@ function mock({ json, input = 100, output = 50, providerMetadata }: MockOpts) {
   });
 }
 
+type Step = { text: string; finish?: "stop" | "length"; input?: number; output?: number };
+function mockSeq(steps: Step[]) {
+  let i = 0;
+  return new MockLanguageModelV3({
+    provider: "gateway",
+    modelId: MODEL,
+    doGenerate: async () => {
+      const st = steps[Math.min(i++, steps.length - 1)];
+      const input = st.input ?? 100, output = st.output ?? 50;
+      return {
+        content: [{ type: "text", text: st.text }],
+        finishReason: { unified: st.finish ?? "stop", raw: undefined },
+        usage: {
+          inputTokens: { total: input, noCache: input, cacheRead: undefined, cacheWrite: undefined },
+          outputTokens: { total: output, text: output, reasoning: undefined },
+        },
+        warnings: [],
+      };
+    },
+  });
+}
+const thinking = (m: MockLanguageModelV3, n: number) =>
+  (m.doGenerateCalls[n].providerOptions?.google as { thinkingConfig: { thinkingLevel: string } }).thinkingConfig.thinkingLevel;
+
 const promptText = (m: MockLanguageModelV3) => JSON.stringify(m.doGenerateCalls[0].prompt);
 
 describe("SYSTEM_PROMPT", () => {
@@ -76,6 +100,8 @@ describe("SYSTEM_PROMPT", () => {
     expect(SYSTEM_PROMPT).toContain(gabby.first_section.headline);
     // Gabby is the single example: her first fix title appears once.
     expect(SYSTEM_PROMPT.split(gabby.fixes[0].title).length - 1).toBe(1);
+    expect(SYSTEM_PROMPT).toContain('"Your headline already does this, so I kept it."');
+    expect(SYSTEM_PROMPT).toContain('Rejected: "Give couples an easy-to-read page" (a fix)');
   });
 
   it("tells the model unknown facts are unknown, not absent", () => {
@@ -86,7 +112,7 @@ describe("SYSTEM_PROMPT", () => {
 });
 
 describe("userMessage", () => {
-  const base = { firstName: "Jane", website: "janedoe.com", facts };
+  const base = { firstName: "Jane", website: "janedoe.com", facts, photoCount: 3 };
 
   it("defaults an empty goal", () => {
     expect(userMessage({ ...base, goal: "" })).toContain("Goal: not given. Diagnose toward more of the right inquiries.");
@@ -107,10 +133,15 @@ describe("userMessage", () => {
     expect(m).toContain(facts.trimmedText);
     expect(m).toContain("left = their first screen today; right = photo candidates 1 to 3");
   });
+
+  it("names the real number of photo candidates", () => {
+    expect(userMessage({ ...base, goal: "", photoCount: 2 })).toContain("right = photo candidates 1 to 2.");
+    expect(userMessage({ ...base, goal: "", photoCount: 1 })).toContain("right = photo candidate 1.");
+  });
 });
 
 describe("writeReport", () => {
-  const input = { firstName: "Jane", website: "janedoe.com", goal: "bookings", facts, contactSheet: Buffer.from([0xff, 0xd8, 0xff]) };
+  const input = { firstName: "Jane", website: "janedoe.com", goal: "bookings", facts, photoCount: 3, contactSheet: Buffer.from([0xff, 0xd8, 0xff]) };
 
   it("sends one image part with low media resolution and the low thinking option", async () => {
     const m = mock({ json: reportJson });
@@ -124,7 +155,7 @@ describe("writeReport", () => {
     expect(google.mediaResolution).toBe("MEDIA_RESOLUTION_LOW");
     expect(google.thinkingConfig.thinkingLevel).toBe("low");
     expect(call.maxOutputTokens).toBe(2000);
-    expect(call.temperature).toBe(0.4);
+    expect(call.temperature).toBeUndefined();
     expect(promptText(m)).toContain("Goal: bookings");
   });
 
@@ -149,6 +180,77 @@ describe("writeReport", () => {
     expect(usage.outputTokens).toBe(1400);
     expect(usage.calls).toBe(1);
     expect(Math.abs(usage.costUsd - 0.009)).toBeLessThan(1e-6);
+  });
+
+  it("sends one flat object schema, not a root anyOf", async () => {
+    const m = mock({ json: reportJson });
+    await writeReport({ ...input, model: m });
+    const fmt = m.doGenerateCalls[0].responseFormat as { type: string; schema: Record<string, unknown> };
+    expect(fmt.schema.type).toBe("object");
+    expect(fmt.schema.anyOf).toBeUndefined();
+    expect(fmt.schema.oneOf).toBeUndefined();
+    expect(fmt.schema.required).toEqual(["fit"]);
+  });
+
+  for (const n of [1, 2]) {
+    it(`caps photo_choice at photoCount=${n}`, async () => {
+      const m = mock({ json: { ...reportJson, photo_choice: n } });
+      const { written } = await writeReport({ ...input, photoCount: n, model: m });
+      const fmt = m.doGenerateCalls[0].responseFormat as unknown as { schema: { properties: { photo_choice: { maximum: number } } } };
+      expect(fmt.schema.properties.photo_choice.maximum).toBe(n);
+      expect(promptText(m)).toContain(n === 1 ? "photo candidate 1." : "photo candidates 1 to 2.");
+      if (written.fit === "report") expect(written.photo_choice).toBe(n);
+    });
+  }
+
+  it("rejects photo_choice above photoCount", async () => {
+    const m = mock({ json: { ...reportJson, photo_choice: 3 } });
+    await expect(writeReport({ ...input, photoCount: 2, model: m })).rejects.toThrow();
+    expect(m.doGenerateCalls).toHaveLength(2); // retried once
+  });
+
+  it("retries once with minimal thinking after a truncated answer and sums usage", async () => {
+    const m = mockSeq([
+      { text: '{"fit":"report","headline":"Your Fri', finish: "length", input: 5000, output: 2000 },
+      { text: JSON.stringify(reportJson), input: 5000, output: 1200 },
+    ]);
+    const { written, usage } = await writeReport({ ...input, model: m });
+    expect(written.fit).toBe("report");
+    expect(m.doGenerateCalls).toHaveLength(2);
+    expect(thinking(m, 0)).toBe("low");
+    expect(thinking(m, 1)).toBe("minimal");
+    expect(m.doGenerateCalls[1].maxOutputTokens).toBe(2000);
+    expect(usage).toEqual({ inputTokens: 10000, outputTokens: 3200, calls: 2, costUsd: expect.closeTo(costOf({ inputTokens: 10000, outputTokens: 3200 }, MODEL), 9) });
+  });
+
+  it("retries once when a report is missing fields", async () => {
+    const { headline: _h, fixes: _f, ...partial } = reportJson;
+    void _h; void _f;
+    const m = mockSeq([{ text: JSON.stringify(partial) }, { text: JSON.stringify(reportJson) }]);
+    const { written, usage } = await writeReport({ ...input, model: m });
+    expect(written.fit).toBe("report");
+    expect(usage.calls).toBe(2);
+    expect(thinking(m, 1)).toBe("minimal");
+  });
+
+  it("throws the typed missing-fields error when the retry is incomplete too", async () => {
+    const m = mockSeq([{ text: JSON.stringify({ fit: "report", headline: "H" }) }]);
+    const err = await writeReport({ ...input, model: m }).catch((e) => e);
+    expect(err).toBeInstanceOf(WrittenIncompleteError);
+    expect((err as WrittenIncompleteError).missing).toContain("fixes");
+    expect((err as WrittenIncompleteError).missing).not.toContain("headline");
+    expect(m.doGenerateCalls).toHaveLength(2);
+  });
+
+  it("treats a hobby answer without a compliment as incomplete", async () => {
+    const m = mockSeq([{ text: '{"fit":"hobby"}' }, { text: '{"fit":"hobby","compliment":"Lovely colors."}' }]);
+    const { written } = await writeReport({ ...input, model: m });
+    expect(written).toEqual({ fit: "hobby", compliment: "Lovely colors." });
+  });
+
+  it("does not retry on other errors", async () => {
+    const m = new MockLanguageModelV3({ modelId: MODEL, doGenerate: async () => { throw new Error("gateway down"); } });
+    await expect(writeReport({ ...input, model: m })).rejects.toThrow("gateway down");
   });
 
   it("prefers the gateway's reported cost", async () => {
@@ -176,6 +278,33 @@ describe("repairFields", () => {
     expect(content.first_section_changes).toEqual(gabby.first_section_changes);
     expect(gabby.fixes[0].title).toBe("Let your story show what sets you apart"); // input not mutated
     expect(usage.calls).toBe(1);
+    expect(thinking(m, 0)).toBe("minimal");
+    expect(m.doGenerateCalls[0].maxOutputTokens).toBe(1500);
+    expect(m.doGenerateCalls[0].temperature).toBeUndefined();
+    expect(p).toContain('Keep any exact quote from their site unchanged, even if it contains \\"her\\", \\"!\\" or a price.');
+  });
+
+  it("sends only error-level issues", async () => {
+    const m = mock({ json: { fields: [] } });
+    const { content, usage } = await repairFields({
+      content: gabby,
+      issues: [
+        { field: "fixes[2].noticed", level: "warning", message: "has an exclamation point" },
+        { field: "fixes[1].why", level: "error", message: "uses a banned word" },
+      ],
+      model: m,
+    });
+    const p = promptText(m);
+    expect(p).toContain("fixes[1].why");
+    expect(p).not.toContain("fixes[2].noticed");
+    expect(content).toEqual(gabby);
+    expect(usage.calls).toBe(1);
+  });
+
+  it("makes no call for warnings only", async () => {
+    const m = mock({ json: { fields: [] } });
+    await repairFields({ content: gabby, issues: [{ field: "fixes[2].noticed", level: "warning", message: "x" }], model: m });
+    expect(m.doGenerateCalls).toHaveLength(0);
   });
 
   it("merges every label shape and ignores fields it did not ask for", async () => {
@@ -194,7 +323,7 @@ describe("repairFields", () => {
       issues: [
         { field: "first_section.headline", level: "error", message: "x" },
         { field: "first_section_changes[2]", level: "error", message: "x" },
-        { field: "fixes[2].changes[3]", level: "warning", message: "x" },
+        { field: "fixes[2].changes[3]", level: "error", message: "x" },
       ],
       model: m,
     });
@@ -227,7 +356,8 @@ describe("lookCheck", () => {
       const r = await lookCheck(img, m);
       expect(r.ok).toBe(ok);
       expect(r).toMatchObject({ faces_ok, headline_readable, looks_like_template });
-      expect(m.doGenerateCalls[0].maxOutputTokens).toBe(200);
+      expect(m.doGenerateCalls[0].maxOutputTokens).toBe(1000);
+      expect(thinking(m, 0)).toBe("minimal");
     });
   }
 });
