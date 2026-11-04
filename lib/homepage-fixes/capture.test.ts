@@ -47,6 +47,9 @@ function stubFetch() {
     calls.push({ url, method });
     if (url.includes("broken")) return new Response("nope", { status: 404 });
     if (url.includes("/missing")) return new Response(null, { status: 404 });
+    if (url.includes("/shielded")) return new Response(method === "HEAD" ? null : "ok", { status: method === "HEAD" ? 403 : 200 });
+    if (url.includes("/forbidden")) return new Response(method === "HEAD" ? null : "no", { status: 403 });
+    if (url.includes("/nohead")) return new Response(method === "HEAD" ? null : "ok", { status: method === "HEAD" ? 405 : 200 });
     const type = url.endsWith(".png") ? "image/png" : url.includes("janedoe.com/") && !/\.(jpg|png)$/.test(url) ? "text/html" : "image/jpeg";
     return new Response(method === "HEAD" ? null : new Uint8Array([1, 2, 3]), { status: 200, headers: { "content-type": type } });
   });
@@ -175,6 +178,28 @@ describe("captureSite", () => {
     })));
     const cap = await captureSite("https://janedoe.com", { fetchImpl: stubFetch().impl });
     expect(cap.photos.map((p) => p.candidate.src)).toEqual(["https://janedoe.com/ok.jpg"]);
+  });
+
+  it("retries a 403 or 405 HEAD once with GET and uses that status", async () => {
+    scrape.mockResolvedValue(fakeDoc(fakePage({
+      buttons: [
+        { text: "Home", href: "https://janedoe.com/shielded", y: 10 },
+        { text: "Private", href: "https://janedoe.com/forbidden", y: 20 },
+        { text: "Old", href: "https://janedoe.com/nohead", y: 30 },
+        { text: "Contact", href: "https://janedoe.com/contact", y: 40 },
+      ],
+    })));
+    const { impl, calls } = stubFetch();
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: impl });
+    expect(cap.linkStatus).toEqual({
+      "https://janedoe.com/shielded": 200,
+      "https://janedoe.com/forbidden": 403,
+      "https://janedoe.com/nohead": 200,
+      "https://janedoe.com/contact": 200,
+    });
+    const gets = calls.filter((c) => c.method === "GET" && !c.url.includes("firecrawl")).map((c) => c.url);
+    expect(gets.filter((u) => /shielded|forbidden|nohead/.test(u))).toHaveLength(3);
+    expect(gets).not.toContain("https://janedoe.com/contact");
   });
 
   it("marks link status", async () => {

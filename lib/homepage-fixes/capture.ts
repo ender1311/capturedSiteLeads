@@ -132,8 +132,11 @@ async function checkLinks(
     });
     try {
       let res = await req("HEAD");
-      // Some servers refuse HEAD; ask again with GET so the status reflects the real page.
-      if (res.status === 405 || res.status === 501) res = await req("GET");
+      // Some servers (and bot shields) refuse HEAD; ask once more with GET and use that status.
+      if (res.status === 403 || res.status === 405 || res.status === 501) {
+        res = await req("GET");
+        await res.body?.cancel().catch(() => {}); // headers are enough
+      }
       status[href] = res.status;
     } catch {
       status[href] = "no response";

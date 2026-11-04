@@ -20,6 +20,16 @@ const RESOLVE = `
     var fd = fr && fr.contentDocument;
     if (fd && fd.body && (fd.body.innerText || '').trim().length > 50) { W = fr.contentWindow; D = fd; frame = true; }
   } catch (e) {}
+  // The screenshot window has no scrollbar; hide the frame's so its layout is a full 1440px
+  // (a 15px scrollbar can tip builders like Squarespace into their burger menu).
+  if (frame && !D.getElementById('__hf_style')) {
+    try {
+      var hs0 = D.createElement('style'); hs0.id = '__hf_style';
+      hs0.textContent = 'html{scrollbar-width:none}html::-webkit-scrollbar,body::-webkit-scrollbar{display:none;width:0;height:0}';
+      (D.head || D.documentElement).appendChild(hs0);
+      W.dispatchEvent(new W.Event('resize'));
+    } catch (e) {}
+  }
   // The top window reports a 100000px-tall viewport; fall back to its outer height for one screen.
   var SH = frame ? W.innerHeight : (W.innerHeight > 1500 ? (W.outerHeight > 0 && W.outerHeight <= 1500 ? W.outerHeight : 1080) : W.innerHeight);
 `;
@@ -134,15 +144,67 @@ export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
   imgs.forEach(function (i) { pageHeight = Math.max(pageHeight, i.y + i.h); });
   if (frame) pageHeight = Math.max(pageHeight, D.documentElement.scrollHeight);
   rows.forEach(function (r) { delete r._b; });
-  var linkEls = arr(D.querySelectorAll('a')).filter(function (a) { var t = a.innerText.trim(); return vis(a) && t && t.length < 30; });
   var docY = function (el) { return el.getBoundingClientRect().top + sy; };
-  // Nav at the top (first 180px); if none, look at the bottom of the first screen.
-  var navEls = linkEls.filter(function (a) { return docY(a) < 180; });
-  var navTop = navEls.length > 0;
-  if (!navEls.length) {
-    navEls = linkEls.filter(function (a) { var y = docY(a); return y >= SH - 180 && y < SH; });
+  // Nav: short links at the top (first 180px), else at the bottom of the first screen.
+  // Skip links, visually hidden links and the site-title link are left out; links inside the
+  // nav element (or the element holding the most of them) win; duplicates dropped; max 8.
+  var norm = function (t) { return (t || '').replace(/\\s+/g, ' ').trim(); };
+  var siteNames = {};
+  [D.title].concat(D.title.split(/\\s+[-|\u2013\u2014:\u00b7\u2022]\\s+/)).forEach(function (t) { if (norm(t)) siteNames[norm(t).toLowerCase()] = 1; });
+  var ogName = D.querySelector('meta[property="og:site_name"]');
+  if (ogName && ogName.content) siteNames[norm(ogName.content).toLowerCase()] = 1;
+  var hiddenLink = function (a) {
+    var r = a.getBoundingClientRect(); var s = W.getComputedStyle(a);
+    if (r.width <= 1 || r.height <= 1 || r.right <= 0 || r.left >= W.innerWidth) return true;
+    if (/^rect\\(0/.test(s.clip || '')) return true;
+    return /sr-only|screen-reader|visually-hidden|skip-link/i.test(String(a.className || ''));
+  };
+  var skipLink = function (a, t) {
+    var h = a.getAttribute('href') || '';
+    return /^skip to/i.test(t) || h === '#main' || h === '#content' || h === '#main-content';
+  };
+  var navText = function (a, t) { return t && t.length < 30 && !skipLink(a, t) && !siteNames[t.toLowerCase()]; };
+  var linkEls = arr(D.querySelectorAll('a')).filter(function (a) { var t = norm(a.innerText); return vis(a) && !hiddenLink(a) && navText(a, t); });
+  var zoneTop = linkEls.filter(function (a) { return docY(a) < 180; });
+  var zone = zoneTop.length ? zoneTop : linkEls.filter(function (a) { var y = docY(a); return y >= SH - 180 && y < SH; });
+  var navTop = zoneTop.length > 0;
+  var pickGroup = function (links, containers) {
+    var best = null, bestN = 1;
+    containers.forEach(function (c) {
+      var n = links.filter(function (a) { return c.contains(a); }).length;
+      if (n > bestN) { best = c; bestN = n; }
+    });
+    return best ? links.filter(function (a) { return best.contains(a); }) : null;
+  };
+  var navContainers = arr(D.querySelectorAll('header nav, nav, [role="navigation"]'));
+  var navEls = pickGroup(zone, navContainers);
+  if (!navEls) {
+    // No nav element: the innermost ancestor (up to 5 levels, below body) that holds most
+    // of the zone links (at least 2 and 60%), so a lone "Book now" beside the menu drops out.
+    var need = Math.max(2, Math.ceil(zone.length * 0.6));
+    var groups = [];
+    zone.forEach(function (a) {
+      for (var p = a.parentElement, k = 0; p && p !== D.body && p !== D.documentElement && k < 5; p = p.parentElement, k++) {
+        if (groups.indexOf(p) < 0 && zone.filter(function (z) { return p.contains(z); }).length >= need) groups.push(p);
+      }
+    });
+    var inner = groups.filter(function (g) { return !groups.some(function (o) { return o !== g && g.contains(o); }); });
+    navEls = pickGroup(zone, inner) || zone;
   }
-  var navLinks = navEls.map(function (a) { return a.innerText.trim().replace(/\\s+/g, ' '); });
+  var navLinks = navEls.map(function (a) { return norm(a.innerText); });
+  if (!navLinks.length) {
+    // Visible nav missing (burger menu): read the header nav's links by their text.
+    var hidden = arr(D.querySelectorAll('header nav a, header [role="navigation"] a, [role="banner"] nav a'))
+      .filter(function (a) { return navText(a, norm(a.textContent)); });
+    if (hidden.length >= 2) {
+      navLinks = hidden.map(function (a) { return norm(a.textContent); }); navTop = true;
+      // The hidden links' colors are not what shows; style the nav from a visible header link.
+      var hdr = hidden[0].closest('header,[role="banner"]');
+      navEls = hdr ? arr(hdr.querySelectorAll('a')).filter(function (a) { return vis(a) && !hiddenLink(a); }).slice(0, 1) : [];
+    }
+  }
+  var seenNav = {};
+  navLinks = navLinks.filter(function (t) { var k = t.toLowerCase(); if (seenNav[k]) return false; seenNav[k] = 1; return true; }).slice(0, 8);
   var navBg = null, navColor = null, navOverPhoto = false;
   var firstScreenImgs = imgs.filter(function (i) { return i.y < SH; }).sort(function (a, b) { return b.w * b.h - a.w * a.h; });
   if (navEls.length) {
@@ -181,7 +243,7 @@ export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
   var result = JSON.stringify({
     title: D.title, finalUrl: W.location.href, pageHeight: pageHeight,
     metaDesc: (D.querySelector('meta[name=description]') || {}).content || '',
-    rows: rows, imgs: imgs, nav: Array.from(new Set(navLinks)).slice(0, 10),
+    rows: rows, imgs: imgs, nav: navLinks,
     navTop: navTop, navOverPhoto: navOverPhoto, navBg: navBg, navColor: navColor,
     logo: logoEl ? { src: logoEl.currentSrc || logoEl.src, w: Math.round(logoEl.getBoundingClientRect().width), h: Math.round(logoEl.getBoundingClientRect().height) } : null,
     fonts: { heading: biggest ? biggest.ff : '', headingWeight: biggest ? biggest.fw : '', body: bodyP ? bodyP.ff : '' },
