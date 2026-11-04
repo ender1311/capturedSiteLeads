@@ -125,9 +125,15 @@ const FETCH_BUDGET_MS = 2400;
 const BROWSER_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 
-const PLACEHOLDER_RE =
-  /coming soon|under construction|launching soon|maintenance mode|domain (is )?for sale|buy this domain|parked free/i;
-const BOT_CHECK_RE = /just a moment|attention required|challenge-platform|_cf_chl_opt/i;
+// Parked or for-sale wording blocks wherever it appears. "Coming soon" style
+// wording blocks only in the title or on a thin page: a full homepage can
+// easily say "Fall minis coming soon".
+const PARKED_RE = /domain (is )?for sale|buy this domain|parked free/i;
+const SOON_RE = /coming soon|under construction|launching soon|maintenance mode/i;
+const THIN_PAGE_WORDS = 150;
+// Firewall and bot-check statuses (Cloudflare, Wordfence, Sucuri...): a real
+// browser often gets through, so Firecrawl decides after the form is sent.
+const FIREWALL_STATUSES = new Set([401, 403, 429, 503]);
 
 // Addresses a public website must never resolve to. Two lists, because a
 // BlockList holding ::ffff:0:0/96 also matches every IPv4 address.
@@ -222,9 +228,9 @@ async function readCapped(res: Response, cap: number): Promise<string> {
   return new TextDecoder().decode(buf);
 }
 
-function titleAndText(html: string): string {
-  const title = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "";
-  const body = html
+function visibleText(html: string): { title: string; text: string } {
+  const title = (html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] ?? "").replace(/\s+/g, " ").trim();
+  const text = html
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<(script|style|noscript|template|head)\b[\s\S]*?<\/\1>/gi, " ")
     .replace(/<[^>]+>/g, " ")
@@ -232,9 +238,16 @@ function titleAndText(html: string): string {
     .replace(/&amp;/g, "&")
     .replace(/&#0?39;|&apos;/g, "'")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, 5000);
-  return `${title} ${body}`;
+    .trim();
+  return { title, text };
+}
+
+export function isPlaceholderPage(html: string): boolean {
+  const { title, text } = visibleText(html);
+  if (PARKED_RE.test(title) || PARKED_RE.test(text)) return true;
+  if (SOON_RE.test(title)) return true;
+  const words = text ? text.split(" ").length : 0;
+  return words < THIN_PAGE_WORDS && SOON_RE.test(text);
 }
 
 export async function checkWebsite(site: string, deps: SiteDeps = {}): Promise<SiteCheck> {
@@ -243,6 +256,9 @@ export async function checkWebsite(site: string, deps: SiteDeps = {}): Promise<S
 
   let url = parseSite(site);
   if (!url) return unreachable("bad_url");
+  // When we supplied https:// ourselves, a TLS/connect failure gets one retry
+  // over http:// (same vetting, same deadline budget).
+  let httpFallback = !/^[a-z][a-z0-9+.-]*:\/\//i.test(site.trim());
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_BUDGET_MS);
@@ -265,9 +281,17 @@ export async function checkWebsite(site: string, deps: SiteDeps = {}): Promise<S
           },
         });
       } catch {
-        return controller.signal.aborted ? TIMEOUT_PASS : unreachable("not_loading");
+        if (controller.signal.aborted) return TIMEOUT_PASS;
+        if (httpFallback && hop === 0 && url.protocol === "https:") {
+          httpFallback = false;
+          url = new URL(url.href.replace(/^https:/, "http:"));
+          hop = -1; // the retry starts the redirect count afresh
+          continue;
+        }
+        return unreachable("not_loading");
       }
 
+      httpFallback = false;
       const location = res.headers.get("location");
       if (res.status >= 300 && res.status < 400 && location) {
         res.body?.cancel().catch(() => {});
@@ -287,16 +311,10 @@ export async function checkWebsite(site: string, deps: SiteDeps = {}): Promise<S
         if (controller.signal.aborted) return TIMEOUT_PASS;
       }
 
-      if (res.status >= 400) {
-        // A bot check is not a dead site: a real browser often gets through.
-        // Firecrawl decides after the form is sent.
-        if ([403, 429, 503].includes(res.status) && BOT_CHECK_RE.test(html)) {
-          return { ok: true, code: "ok", url: url.href };
-        }
-        return unreachable("not_loading");
-      }
+      if (FIREWALL_STATUSES.has(res.status)) return { ok: true, code: "ok", url: url.href };
+      if (res.status >= 400) return unreachable("not_loading");
 
-      if (PLACEHOLDER_RE.test(titleAndText(html))) {
+      if (isPlaceholderPage(html)) {
         return { ok: false, code: "placeholder", message: SITE_MESSAGES.placeholder };
       }
       return { ok: true, code: "ok", url: url.href };

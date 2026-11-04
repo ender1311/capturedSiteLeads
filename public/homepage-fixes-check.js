@@ -56,6 +56,7 @@
         result: null,
         pending: null, // { value, promise }
         timer: null,
+        reported: {}, // values already sent to bfm
       };
     }
 
@@ -82,6 +83,7 @@
         box.style.color = RED;
         box.textContent = r.message;
         f.input.setAttribute("aria-invalid", "true");
+        track(f);
       } else if (r.ok && r.code === "typo" && r.suggestion) {
         box.style.color = TEAL;
         var fix = document.createElement("button");
@@ -165,10 +167,15 @@
       });
     }
 
-    function track(field) {
+    // Reports a blocked value to the Beacon Frontier collector, once per
+    // distinct value per field (shown message and blocked submit count once).
+    function track(f) {
+      var value = current(f);
+      if (f.reported[value]) return;
+      f.reported[value] = true;
       if (typeof window.bfm === "function") {
         try {
-          window.bfm("hf_check_blocked", { field: field });
+          window.bfm("hf_check_blocked", { field: f.name });
         } catch { /* analytics must never break the form */ }
       }
     }
@@ -196,7 +203,9 @@
             if (typeof form.requestSubmit === "function") form.requestSubmit(submitButton || undefined);
             return;
           }
-          failing.forEach(track);
+          failing.forEach(function (n) {
+            track(fields[n]);
+          });
           var first = fields[failing[0]].input;
           if (first && typeof first.focus === "function") first.focus();
         });
