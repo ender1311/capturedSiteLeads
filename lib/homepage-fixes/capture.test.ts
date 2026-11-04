@@ -537,6 +537,8 @@ describe("Firecrawl failures (I1)", () => {
     ["DNS failure on the target", sdkError("DNS resolution failed for hostname: janedoe.com", 500, "SCRAPE_DNS_RESOLUTION_ERROR")],
     ["target failing to load", sdkError("Specified URL is failing to load in the browser. Error code: ERR_CONNECTION_REFUSED", 500, "SCRAPE_SITE_ERROR")],
     ["target failing to load, no code", sdkError("Specified URL is failing to load in the browser. Error code: ERR_NAME_NOT_RESOLVED", 500)],
+    // Seen live 2026-11-04: Firecrawl reported a target DNS failure with HTTP 200 and no code.
+    ["DNS failure reported with HTTP 200", sdkError('DNS resolution failed for hostname "thisdomaindoesnotexist-hf-test.com". This means the domain may not exist.', 200)],
     ["blocked site", sdkError("This website is no longer supported, please reach out to help@firecrawl.com for more info on how to activate it on your account.", 403)],
   ])("%s → CaptureError (can't see)", async (_label, e) => {
     scrape.mockRejectedValue(e);

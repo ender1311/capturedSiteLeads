@@ -289,7 +289,9 @@ export function isTargetFailure(e: unknown): boolean {
   if (status === 401 || status === 402 || status === 429) return false;
   if (code.startsWith("SCRAPE_") || status === 408) return true;
   if (status === undefined && (CLIENT_TIMEOUT_CODES.has(code) || /\btimeout of \d+ms exceeded\b/i.test(message))) return true;
-  return (status === undefined || status === 403 || status >= 500) && TARGET_FAILED_RE.test(message);
+  // Firecrawl can report a target failure on any status (seen live: HTTP 200 with "DNS resolution
+  // failed"); our account problems were ruled out above, so the wording decides.
+  return TARGET_FAILED_RE.test(message);
 }
 
 export async function captureSite(url: string, opts: CaptureOpts = {}): Promise<Capture> {
