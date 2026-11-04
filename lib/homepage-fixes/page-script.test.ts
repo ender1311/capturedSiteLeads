@@ -151,6 +151,198 @@ describe.skipIf(!hasChrome)("EXTRACT_SCRIPT nav pick (Chrome)", () => {
     expect(p.navBg).toBe("rgb(255, 255, 255)");
   });
 
+  const color = (c: string) => `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="${c}"/></svg>`)}`;
+  const slides = (style: (i: number) => string) => [1, 2, 3, 4].map((i) =>
+    `<div class="slide" style="position:absolute;inset:0;background:url('${color(`#${i}${i}${i}`)}#s${i}') center/cover;${style(i)}"></div>`).join("");
+
+  it("hero: a slider of 4 stacked same-size slides where the 4th is on top", async () => {
+    const p = await extract(`<section style="position:relative;height:775px">${slides(() => "")}
+      <div style="position:absolute;left:100px;top:300px;color:#fff"><h1>Jane Doe Photography</h1><a href="/contact">Inquire</a></div></section>`);
+    expect(p.imgs[0].hero).toBe(true);
+    expect(p.imgs[0].src).toMatch(/#s4$/);
+    expect(p.imgs.filter((i) => i.hero)).toHaveLength(1);
+  });
+
+  it("hero: the visible slide wins over slides on top with opacity 0", async () => {
+    const p = await extract(`<section style="position:relative;height:775px">${slides((i) => (i === 2 ? "opacity:1" : "opacity:0"))}</section>`);
+    expect(p.imgs[0].hero).toBe(true);
+    expect(p.imgs[0].src).toMatch(/#s2$/);
+    // Opacity-0 slides that are not the hero are left out.
+    expect(p.imgs.some((i) => /#s[134]$/.test(i.src))).toBe(false);
+  });
+
+  it("hero: a slide whose opacity transition has not advanced counts at its end value (frozen headless timeline)", async () => {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1440, height: 900 });
+    await page.setContent(`<!doctype html><html><head><title>Jane</title><style>.slide{transition:opacity 10s linear}</style></head><body style="margin:0">
+      <section style="position:relative;height:775px">${slides((i) => (i === 1 ? "opacity:1" : "opacity:0"))}</section>
+      <p style="margin-top:2000px">${"Text ".repeat(40)}</p></body></html>`);
+    // Slick-style change: slide 3 goes on top and fades in, slide 1 fades out; then the clock stops.
+    await page.evaluate(() => {
+      const s = document.querySelectorAll<HTMLElement>(".slide");
+      void s[0].offsetWidth;
+      s[2].style.zIndex = "999"; s[2].style.opacity = "1"; s[0].style.opacity = "0";
+      document.getAnimations().forEach((a) => { a.pause(); a.currentTime = 0; });
+    });
+    const p = JSON.parse((await page.evaluate(EXTRACT_SCRIPT)) as string) as PageData;
+    await page.close();
+    expect(p.imgs[0].hero).toBe(true);
+    expect(p.imgs[0].src).toMatch(/#s3$/);
+  });
+
+  it("slider: stops the slideshow so the screenshot keeps showing the hero slide", async () => {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1440, height: 900 });
+    await page.setContent(`<!doctype html><html><head><title>Jane</title><style>.slide{transition:opacity .2s}</style></head><body style="margin:0">
+      <section style="position:relative;height:775px">${slides((i) => (i === 1 ? "opacity:1;z-index:2" : "opacity:0"))}</section>
+      <p style="margin-top:2000px">${"Text ".repeat(40)}</p>
+      <script>var n = 0; setInterval(function () { var s = document.querySelectorAll('.slide'); s.forEach(function (e) { e.style.opacity = 0; e.style.zIndex = ''; });
+        n = (n + 1) % 4; s[n].style.opacity = 1; s[n].style.zIndex = 2; window.__n = n; }, 250);</script></body></html>`);
+    await new Promise((r) => setTimeout(r, 300));
+    const p = JSON.parse((await page.evaluate(EXTRACT_SCRIPT)) as string) as PageData;
+    const at = await page.evaluate(() => (window as unknown as { __n: number }).__n);
+    await new Promise((r) => setTimeout(r, 700));
+    const later = await page.evaluate(() => (window as unknown as { __n: number }).__n);
+    const top = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".slide")].findIndex((e) => getComputedStyle(e).opacity === "1"));
+    await page.close();
+    expect(p.imgs[0].hero).toBe(true);
+    expect(later).toBe(at);
+    expect(p.imgs[0].src).toMatch(new RegExp(`#s${top + 1}$`));
+  });
+
+  it("slider mid cross-fade: the more visible slide is the hero and is shown fully for the screenshot", async () => {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1440, height: 900 });
+    // jQuery Cycle style: the incoming slide is on top at 0.3, the outgoing one under it at 0.7.
+    await page.setContent(`<!doctype html><html><head><title>Jane</title></head><body style="margin:0">
+      <section style="position:relative;height:900px">${slides((i) => (i === 1 ? "opacity:0.7;z-index:99" : i === 2 ? "opacity:0.3;z-index:100" : "opacity:0"))}</section>
+      <p>${"Text ".repeat(40)}</p></body></html>`);
+    const p = JSON.parse((await page.evaluate(EXTRACT_SCRIPT)) as string) as PageData;
+    const ops = await page.evaluate(() => [...document.querySelectorAll<HTMLElement>(".slide")].map((e) => getComputedStyle(e).opacity));
+    await page.close();
+    expect(p.imgs[0].hero).toBe(true);
+    expect(p.imgs[0].src).toMatch(/#s1$/);
+    expect(ops).toEqual(["1", "0", "0", "0"]);
+  });
+
+  it("no slider: the page's timers keep running after the extraction", async () => {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1440, height: 900 });
+    await page.setContent(`<!doctype html><html><head><title>Jane</title></head><body style="margin:0">
+      <img src="${color("#456")}#one" style="display:block;width:1440px;height:800px"><p>${"Text ".repeat(40)}</p>
+      <script>window.__t = 0; setInterval(function () { window.__t++; }, 50);</script></body></html>`);
+    const p = JSON.parse((await page.evaluate(EXTRACT_SCRIPT)) as string) as PageData;
+    const a = await page.evaluate(() => (window as unknown as { __t: number }).__t);
+    await new Promise((r) => setTimeout(r, 300));
+    const b = await page.evaluate(() => (window as unknown as { __t: number }).__t);
+    await page.close();
+    expect(p.imgs[0].hero).toBe(true);
+    expect(b).toBeGreaterThan(a);
+  });
+
+  it("hero: a narrow panel of a triptych (Showit) under the screen centre", async () => {
+    const p = await extract(`<div style="position:relative;height:900px">
+      ${[0, 1, 2].map((i) => `<div style="position:absolute;top:0;left:${i * 480}px;width:480px;height:900px;background:url('${color("#a" + i + "a")}#t${i}') center/cover"></div>`).join("")}
+      <div style="position:absolute;left:400px;top:400px;width:640px;color:#fff;font-size:40px">Timeless wedding photos</div></div>
+      <img src="${color("#999")}#big" style="display:block;width:1440px;height:960px">`);
+    const hero = p.imgs.find((i) => i.hero);
+    expect(hero?.src).toMatch(/#t1$/);
+    expect(p.imgs[0]).toBe(hero ? p.imgs[0] : undefined);
+    expect(p.imgs[0].w).toBe(480);
+  });
+
+  it("hero: a background photo with pointer-events none (Squarespace)", async () => {
+    const p = await extract(`<section style="position:relative;height:724px">
+      <img src="${color("#456")}#sq" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none">
+      <div style="position:relative;padding:300px 100px;color:#fff"><h1>Jane Doe</h1></div></section>`);
+    expect(p.imgs[0].hero).toBe(true);
+    expect(p.imgs[0].src).toMatch(/#sq$/);
+  });
+
+  it("hero in the frame follows the slide the top window shows (the screenshot)", async () => {
+    const page = await browser.newPage();
+    await page.setViewport({ width: 1440, height: 900 });
+    const frameSlides = slides((i) => (i === 2 ? "opacity:1" : "opacity:0"));
+    const srcdoc = `<!doctype html><body style="margin:0"><section style="position:relative;height:775px">${frameSlides}</section><p>${"Frame text ".repeat(20)}</p></body>`;
+    await page.setContent(`<!doctype html><html><head><title>Jane</title></head><body style="margin:0">
+      <section style="position:relative;height:775px">${slides(() => "")}</section>
+      <iframe id="__hf" style="position:fixed;left:0;top:0;width:1440px;height:900px;border:0;opacity:0;pointer-events:none"></iframe></body></html>`);
+    await page.evaluate((html) => new Promise<void>((done) => {
+      const f = document.getElementById("__hf") as HTMLIFrameElement;
+      f.onload = () => done();
+      f.srcdoc = html;
+    }), srcdoc);
+    const p = JSON.parse((await page.evaluate(EXTRACT_SCRIPT)) as string) as PageData;
+    await page.close();
+    expect(p.frame).toBe(true);
+    expect(p.imgs[0].hero).toBe(true);
+    expect(p.imgs[0].src).toMatch(/#s4$/);
+  });
+
+  it("hero: an <img> below a text overlay, and its largest srcset candidate", async () => {
+    const p = await extract(`<div style="position:relative">
+      <img src="${color("#123")}#small" srcset="${color("#123")}#w500 500w, ${color("#123")}#w2500 2500w, ${color("#123")}#w1000 1000w" sizes="1440px" style="display:block;width:1440px;height:900px">
+      <div style="position:absolute;inset:0;background:linear-gradient(rgba(0,0,0,.3),rgba(0,0,0,.3))"><h1 style="margin:300px">Hello</h1></div></div>`);
+    expect(p.imgs[0].hero).toBe(true);
+    expect(p.imgs[0].src).toMatch(/#w2500$/);
+  });
+
+  it("image source: data-srcset, then data-src, then currentSrc", async () => {
+    const p = await extract(`<div style="height:1000px"></div>
+      <img src="${color("#111")}#a-cur" data-srcset="${color("#111")}#a-400 400w, ${color("#111")}#a-1600 1600w" style="display:block;width:600px;height:400px">
+      <img src="${color("#222")}#b-cur" data-src="${color("#222")}#b-data" style="display:block;width:600px;height:400px">
+      <img src="${color("#333")}#c-cur" style="display:block;width:600px;height:400px">`);
+    const srcs = p.imgs.map((i) => i.src.replace(/^.*#/, ""));
+    expect(srcs).toEqual(expect.arrayContaining(["a-1600", "b-data", "c-cur"]));
+  });
+
+  it("leaves out images above the page, opacity 0 or hidden, and keeps 300x200 ones", async () => {
+    const p = await extract(`<img src="${color("#111")}#above" style="position:absolute;top:-1000px;left:0;width:1440px;height:900px">
+      <div style="height:1000px"></div>
+      <img src="${color("#222")}#faded" style="display:block;width:1200px;height:800px;opacity:0">
+      <img src="${color("#333")}#hidden" style="display:block;width:1200px;height:800px;visibility:hidden">
+      <img src="${color("#444")}#ok" style="display:block;width:300px;height:200px">
+      <img src="${color("#555")}#small" style="display:block;width:299px;height:200px">`);
+    const srcs = p.imgs.map((i) => i.src.replace(/^.*#/, ""));
+    expect(srcs).toEqual(["ok"]);
+    expect(p.imgs.some((i) => i.hero)).toBe(false);
+  });
+
+  it("hamburger: no visible links and a MENU button gives nav ['Menu']", async () => {
+    const p = await extract(`<div style="position:relative;height:120px">
+      <div style="position:absolute;right:40px;top:40px;font-size:14px;letter-spacing:.2em;cursor:pointer">MENU</div></div>
+      <div style="position:fixed;inset:0;display:none"><div>Home</div><div>About</div></div>`);
+    expect(p.nav).toEqual(["Menu"]);
+    expect(p.navTop).toBe(true);
+  });
+
+  it("hamburger: a burger button reads the hidden menu container's links (skip links and duplicates out, max 8)", async () => {
+    const items = ["Home", "About", "Portfolio", "Families", "Seniors", "Investment", "Blog", "Contact", "Shop"];
+    const p = await extract(`<div style="padding:20px;height:80px"><button aria-label="Open navigation" class="nav-toggle" style="float:right;width:40px;height:30px"></button></div>
+      <div class="site-menu" style="display:none"><a href="#main">Skip to content</a>${links(["Home", ...items])}</div>`);
+    expect(p.nav).toEqual(items.slice(0, 8));
+    expect(p.navTop).toBe(true);
+  });
+
+  it("no menu button and no links: nav stays empty", async () => {
+    const p = await extract(`<div style="padding:20px">Jane Doe</div><div class="menu-wrapper" style="display:none"><a href="/x">Hidden</a></div>`);
+    expect(p.nav).toEqual([]);
+  });
+
+  it("logo: an inline svg inside the empty-text brand link in the header", async () => {
+    const p = await extract(`<header style="padding:20px;color:rgb(20, 30, 40)"><a href="/" aria-label="Jane Doe"><svg width="160" height="50" viewBox="0 0 160 50"><path d="M0 0h160v50H0z" fill="currentColor"/></svg></a>
+      <nav>${links(["Home", "About", "Contact"])}</nav></header>`);
+    expect(p.logo?.src).toMatch(/^data:image\/svg\+xml/);
+    expect(decodeURIComponent(p.logo!.src)).toContain("<svg");
+    expect(p.logo?.w).toBe(160);
+  });
+
+  it("logo: an <img> inside the brand link is still found the old way", async () => {
+    const p = await extract(`<header style="padding:20px"><a href="/"><img src="${color("#000")}#brand" alt="" style="width:180px;height:60px"></a>
+      <nav>${links(["Home", "About", "Contact"])}</nav></header>`);
+    expect(p.logo?.src).toMatch(/#brand$/);
+  });
+
   it("returns no nav and navTop false when there are no nav links", async () => {
     const p = await extract(`<div style="padding:20px">Jane Doe</div>`);
     expect(p.nav).toEqual([]);

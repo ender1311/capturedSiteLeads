@@ -14,7 +14,6 @@ export type Facts = {
 };
 
 const TRIM_LIMIT = 7200;
-const MIN_PHOTO_W = 800;
 // Same rules as the skill's capture.mjs.
 const BOT_CHECK_RE = /just a moment|verify you are human|checking your browser|captcha|access denied|attention required|are you a robot/i;
 const COMING_SOON_RE = /coming soon|under construction|launching soon|maintenance mode|site is currently unavailable/i;
@@ -183,7 +182,8 @@ export function buildFacts(c: Capture): Facts {
   if (BOT_CHECK_RE.test(titleSample)) flags.push("BOT_CHECK");
   if (COMING_SOON_RE.test(titleSample)) flags.push("COMING_SOON");
   if (page.textLength < 300) flags.push("TOO_LITTLE_TEXT");
-  if (!page.imgs.some((i) => i.w >= MIN_PHOTO_W && !/\.svg(\?|$)/i.test(i.src))) flags.push("NO_PHOTO");
+  // Photos qualify in capture by the downloaded file's width; none qualified means no photo.
+  if (!c.photos.length) flags.push("NO_PHOTO");
 
   // Blocks and their roles
   const blocks = toBlocks(page);

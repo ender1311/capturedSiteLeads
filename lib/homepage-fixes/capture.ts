@@ -12,7 +12,11 @@ export class CaptureError extends Error {
 }
 
 const MAX_PHOTOS = 3;
-const MIN_PHOTO_W = 800;
+// Displayed-size prefilter, then the downloaded file's own width decides.
+const MIN_SHOWN_W = 300;
+const MIN_SHOWN_H = 200;
+const MIN_FILE_W = 1000;
+const MIN_HERO_FILE_W = 600;
 const MAX_PHOTO_TRIES = 6;
 const MAX_LINKS_CHECKED = 15;
 const DOWNLOAD_TIMEOUT_MS = 10_000;
@@ -100,11 +104,79 @@ async function download(fetchImpl: typeof fetch, url: string, timeoutMs: number)
   }
 }
 
+/** Pixel width from an image file's header (JPEG, PNG, WebP, GIF, AVIF/HEIF), or null. */
+export function imageWidth(b: Buffer): number | null {
+  const n = b.length;
+  // PNG: IHDR width
+  if (n >= 24 && b.readUInt32BE(0) === 0x89504e47 && b.toString("ascii", 12, 16) === "IHDR") return b.readUInt32BE(16);
+  // GIF: logical screen width
+  if (n >= 10 && b.toString("ascii", 0, 3) === "GIF") return b.readUInt16LE(6);
+  // WebP: VP8 (lossy), VP8L (lossless), VP8X (extended)
+  if (n >= 16 && b.toString("ascii", 0, 4) === "RIFF" && b.toString("ascii", 8, 12) === "WEBP") {
+    const chunk = b.toString("ascii", 12, 16);
+    if (chunk === "VP8 " && n >= 28) return b.readUInt16LE(26) & 0x3fff;
+    if (chunk === "VP8L" && n >= 23) return 1 + (b[21] | ((b[22] & 0x3f) << 8));
+    if (chunk === "VP8X" && n >= 27) return 1 + b.readUIntLE(24, 3);
+    return null;
+  }
+  // JPEG: walk the segments to the first SOF marker
+  if (n >= 4 && b[0] === 0xff && b[1] === 0xd8) {
+    let i = 2;
+    while (i + 3 < n) {
+      if (b[i] !== 0xff) return null;
+      const m = b[i + 1];
+      if (m === 0xff) { i++; continue; }
+      if (m === 0xd8 || m === 0x01 || (m >= 0xd0 && m <= 0xd7)) { i += 2; continue; }
+      if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return i + 8 < n ? b.readUInt16BE(i + 7) : null;
+      i += 2 + b.readUInt16BE(i + 2);
+    }
+    return null;
+  }
+  // AVIF/HEIF: the widest "ispe" (image spatial extents) box
+  if (n >= 12 && b.toString("ascii", 4, 8) === "ftyp") {
+    let best: number | null = null;
+    for (let i = b.indexOf("ispe"); i >= 0 && i + 12 <= n; i = b.indexOf("ispe", i + 4)) best = Math.max(best ?? 0, b.readUInt32BE(i + 8));
+    return best;
+  }
+  return null;
+}
+
+/** Where to download a photo from, best first: Showit images at 2048, then 1200, then 800. */
+export function sourceUrls(src: string): string[] {
+  let u: URL;
+  try { u = new URL(src); } catch { return [src]; }
+  if (u.hostname !== "static.showit.co" || !/^\/\d+\//.test(u.pathname)) return [src];
+  return [...new Set(["2048", "1200", "800"].map((size) => {
+    const v = new URL(src);
+    v.pathname = v.pathname.replace(/^\/\d+\//, `/${size}/`);
+    return v.href;
+  }).concat(src))];
+}
+
+async function downloadFirst(fetchImpl: typeof fetch, urls: string[]): Promise<Asset | null> {
+  for (const url of urls) {
+    const asset = await download(fetchImpl, url, DOWNLOAD_TIMEOUT_MS);
+    if (asset) return asset;
+  }
+  return null;
+}
+
+/** Hero first, then other first-screen images by displayed area, then the rest by area. */
 function photoOrder(imgs: ImageCandidate[], screenH: number): ImageCandidate[] {
   const seen = new Set<string>();
+  const rank = (i: ImageCandidate) => (i.hero ? 0 : i.y < screenH ? 1 : 2);
   return imgs
-    .filter((i) => !/\.svg(\?|$)/i.test(i.src) && i.w >= MIN_PHOTO_W && !seen.has(i.src) && !!seen.add(i.src))
-    .sort((a, b) => (a.y < screenH ? 0 : 1) - (b.y < screenH ? 0 : 1) || b.w * b.h - a.w * a.h);
+    .filter((i) => !/\.svg(\?|$)/i.test(i.src)
+      && (i.hero || (i.w >= MIN_SHOWN_W && i.h >= MIN_SHOWN_H && i.y + i.h > 0))
+      && !seen.has(i.src) && !!seen.add(i.src))
+    .sort((a, b) => rank(a) - rank(b) || b.w * b.h - a.w * a.h);
+}
+
+/** A downloaded photo qualifies by its file's own width: 1000 px, or 600 px for the hero. */
+function qualifies(asset: Asset, candidate: ImageCandidate): boolean {
+  if (asset.mime.includes("svg")) return false;
+  const w = imageWidth(asset.data);
+  return w !== null && w >= (candidate.hero ? MIN_HERO_FILE_W : MIN_FILE_W);
 }
 
 const bareHost = (u: URL) => u.hostname.replace(/^www\./, "");
@@ -171,12 +243,12 @@ export async function captureFromDoc(url: string, doc: ScrapeDoc, opts: { fetchI
 
   const photosP = (async () => {
     const candidates = photoOrder(page.imgs, screenH).slice(0, MAX_PHOTO_TRIES);
-    const assets = await Promise.all(candidates.map((c) => download(fetchImpl, c.src, DOWNLOAD_TIMEOUT_MS)));
+    const assets = await Promise.all(candidates.map((c) => downloadFirst(fetchImpl, sourceUrls(c.src))));
     const photos: Capture["photos"] = [];
     candidates.forEach((candidate, i) => {
       const asset = assets[i];
-      if (photos.length < MAX_PHOTOS && asset && asset.mime.startsWith("image/")) {
-        photos.push({ ...asset, candidate, firstScreen: candidate.y < screenH });
+      if (photos.length < MAX_PHOTOS && asset && qualifies(asset, candidate)) {
+        photos.push({ ...asset, candidate, firstScreen: !!candidate.hero || candidate.y < screenH });
       }
     });
     return photos;

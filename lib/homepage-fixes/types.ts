@@ -1,5 +1,5 @@
 export type TextRow = { y: number; x: number; tag: string; fs: number; fw: string; ff: string; tt: string; href?: string; text: string };
-export type ImageCandidate = { src: string; w: number; h: number; y: number; alt: string; kind: "img" | "background" };
+export type ImageCandidate = { src: string; w: number; h: number; y: number; alt: string; kind: "img" | "background"; hero?: boolean };
 export type PageData = {
   title: string; finalUrl: string; pageHeight: number; metaDesc: string;
   rows: TextRow[]; imgs: ImageCandidate[]; nav: string[];

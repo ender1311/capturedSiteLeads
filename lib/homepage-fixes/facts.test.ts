@@ -29,7 +29,10 @@ function page(over: Partial<PageData> = {}): PageData {
 function capture(p: PageData): Capture {
   return {
     url: p.finalUrl, page: p, before: { data: Buffer.from([1]), mime: "image/png" },
-    photos: [], logo: null, linkStatus: {}, capturedAt: "2026-11-03T00:00:00.000Z",
+    // One qualified photo by default; NO_PHOTO is decided in capture by the downloaded file.
+    photos: [{ data: Buffer.from([1]), mime: "image/jpeg", firstScreen: true,
+      candidate: p.imgs[0] ?? { src: "https://janedoe.com/a.jpg", w: 1440, h: 800, y: 0, alt: "", kind: "img" } }],
+    logo: null, linkStatus: {}, capturedAt: "2026-11-03T00:00:00.000Z",
   };
 }
 
@@ -47,9 +50,12 @@ describe("fit flags", () => {
     expect(facts({ textLength: 299 }).flags).toContain("TOO_LITTLE_TEXT");
     expect(facts({ textLength: 300 }).flags).not.toContain("TOO_LITTLE_TEXT");
   });
-  it("NO_PHOTO when no photo is at least 800 wide", () => {
-    expect(facts({ imgs: [{ src: "https://janedoe.com/a.jpg", w: 799, h: 600, y: 0, alt: "", kind: "img" }] }).flags).toContain("NO_PHOTO");
-    expect(facts().flags).toEqual([]);
+  it("NO_PHOTO only when no photo qualified (downloaded) in the capture", () => {
+    const p = page({ imgs: [{ src: "https://janedoe.com/a.jpg", w: 484, h: 484, y: 700, alt: "", kind: "img" }] });
+    // A small displayed photo whose file is large enough qualified in capture: no flag.
+    expect(buildFacts(capture(p)).flags).toEqual([]);
+    // A big displayed photo that did not qualify (no downloaded photo): flagged.
+    expect(buildFacts({ ...capture(page()), photos: [] }).flags).toContain("NO_PHOTO");
   });
 });
 

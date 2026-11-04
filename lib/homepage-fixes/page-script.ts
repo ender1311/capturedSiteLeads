@@ -150,16 +150,127 @@ export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
     rows.push(row);
   });
   rows.sort(function (a, b) { return a.y - b.y || a.x - b.x; });
-  var imgs = []; var imgEl = new Map();
+  // Photos. The hero is the image actually showing in the first screen: the topmost <img> or
+  // background-image element under the screen centre (then 4 points around it), skipping text,
+  // links and overlays without an image, and layers that are see-through (inactive slides).
+  var MIN_W = 300, MIN_H = 200;
+  var abs = function (u) { try { return new W.URL(u, W.location.href).href; } catch (e) { return u; } };
+  var bgUrl = function (el, win) { var bg = (win || W).getComputedStyle(el).backgroundImage; var m = bg && bg.match(/url\\(["']?(.*?)["']?\\)/); return m ? m[1] : null; };
+  // Opacity an element is heading to: a running opacity transition or animation counts at its
+  // end value (headless capture browsers may not advance them, so the computed value is stale).
+  var endOpacity = function (e, win) {
+    var o = parseFloat(win.getComputedStyle(e).opacity);
+    try {
+      (e.getAnimations ? e.getAnimations() : []).forEach(function (a) {
+        var k = a.effect && a.effect.getKeyframes ? a.effect.getKeyframes() : [];
+        var last = k.length ? k[k.length - 1] : null;
+        if (last && last.opacity !== undefined && last.opacity !== null && last.opacity !== '') o = parseFloat(last.opacity);
+      });
+    } catch (e2) {}
+    return o;
+  };
+  var seenOpacity = function (el, win) {
+    for (var e = el, o = 1; e && e.nodeType === 1; e = e.parentElement) { o *= endOpacity(e, win); if (!(o > 0.05)) return 0; }
+    return o;
+  };
+  var findHero = function (doc, win, vw, vh) {
+    if (!doc.elementsFromPoint) return null;
+    // Builders often set pointer-events:none on background photos (Squarespace); hit-test them anyway.
+    var pe = doc.createElement('style'); pe.textContent = '*{pointer-events:auto!important}';
+    (doc.head || doc.documentElement).appendChild(pe);
+    try {
+      var pts = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
+      for (var hp = 0; hp < pts.length; hp++) {
+        var hstack = doc.elementsFromPoint(vw * pts[hp][0], vh * pts[hp][1]);
+        for (var hs = 0; hs < hstack.length; hs++) {
+          var he = hstack[hs];
+          if (he === doc.body || he === doc.documentElement) break;
+          if (he.id === '${FRAME_ID}') continue;
+          if (!(he.tagName === 'IMG' && (he.currentSrc || he.src)) && !bgUrl(he, win)) continue;
+          var hr0 = he.getBoundingClientRect();
+          var heOp = seenOpacity(he, win);
+          if (hr0.width < MIN_W || hr0.height < MIN_H || !heOp) continue;
+          // A slider: other image layers of the same size at the same spot. Mid cross-fade, the
+          // most visible layer wins (ties go to the topmost).
+          var layers = hstack.filter(function (o) {
+            if (o === he || !((o.tagName === 'IMG' && (o.currentSrc || o.src)) || bgUrl(o, win))) return false;
+            var or = o.getBoundingClientRect();
+            return Math.abs(or.left - hr0.left) <= 2 && Math.abs(or.top - hr0.top) <= 2 && Math.abs(or.width - hr0.width) <= 2 && Math.abs(or.height - hr0.height) <= 2;
+          });
+          var best = he, bestOp = heOp;
+          layers.forEach(function (o) { var oo = seenOpacity(o, win); if (oo > bestOp + 0.01) { best = o; bestOp = oo; } });
+          return { el: best, slider: layers.length > 0, layers: [he].concat(layers) };
+        }
+      }
+      return null;
+    } finally { pe.remove(); }
+  };
+  // Best source: the largest srcset/data-srcset candidate, else data-src, else currentSrc.
+  var parseSrcset = function (set) {
+    var out = [], i = 0, n = set.length;
+    while (i < n) {
+      while (i < n && /[\\s,]/.test(set.charAt(i))) i++;
+      var st = i; while (i < n && !/\\s/.test(set.charAt(i))) i++;
+      var u = set.slice(st, i), desc = '';
+      if (/,$/.test(u)) u = u.replace(/,+$/, '');
+      else { var ds = i; while (i < n && set.charAt(i) !== ',') i++; desc = set.slice(ds, i).trim(); }
+      var dm = desc.match(/^(\\d+(?:\\.\\d+)?)([wx])$/i);
+      if (u) out.push({ u: u, v: dm ? parseFloat(dm[1]) : 1, unit: dm ? dm[2].toLowerCase() : 'x' });
+    }
+    return out;
+  };
+  var bestSrc = function (im) {
+    var c = parseSrcset(im.getAttribute('srcset') || '').concat(parseSrcset(im.getAttribute('data-srcset') || ''));
+    var ws = c.filter(function (x) { return x.unit === 'w'; });
+    var pool = ws.length ? ws : c;
+    if (pool.length) return abs(pool.reduce(function (a, b) { return b.v > a.v ? b : a; }).u);
+    var dsrc = im.getAttribute('data-src');
+    if (dsrc) return abs(dsrc);
+    return im.currentSrc || im.src;
+  };
+  var heroHit = findHero(D, W, W.innerWidth, SH);
+  var heroEl = heroHit ? heroHit.el : null;
+  // The screenshot window: its slider is stopped at the end so the screenshot shows this slide.
+  var shotHit = !frame && heroHit && heroHit.slider ? heroHit : null;
+  // The screenshot is of the top window, whose slideshow runs on its own clock: when reading
+  // the frame, the hero is the photo the top window shows, if the frame has it too.
+  var topHeroSrc = null;
+  if (frame) {
+    try {
+      var topSH = window.innerHeight > 1500 ? (window.outerHeight > 0 && window.outerHeight <= 1500 ? window.outerHeight : 1080) : window.innerHeight;
+      var th = findHero(document, window, Math.min(window.innerWidth, ${SCREEN_W}), topSH);
+      if (th) { topHeroSrc = th.el.tagName === 'IMG' ? bestSrc(th.el) : abs(bgUrl(th.el, window)); shotHit = th.slider ? th : null; }
+      else shotHit = null;
+    } catch (e) {}
+  }
+  // Left out: entirely above the page, or opacity 0 / visibility hidden on themselves (unless the hero).
+  var leaveOut = function (el, r) {
+    var cs = W.getComputedStyle(el);
+    return r.bottom + sy <= 0 || cs.visibility === 'hidden' || !(endOpacity(el, W) > 0);
+  };
+  var found = []; var seenEl = new Set();
   D.querySelectorAll('img').forEach(function (im) {
-    var r = im.getBoundingClientRect(); var src = im.currentSrc || im.src;
-    if (src && r.width >= 250 && r.height >= 160) { var ci = { src: src, w: Math.round(r.width), h: Math.round(r.height), y: Math.round(r.top + sy), alt: im.alt || '', kind: 'img' }; imgs.push(ci); imgEl.set(ci, im); }
+    var r = im.getBoundingClientRect();
+    if (!(im.currentSrc || im.src || im.getAttribute('data-src') || im.getAttribute('data-srcset'))) return;
+    if (r.width < MIN_W || r.height < MIN_H) return;
+    seenEl.add(im);
+    found.push({ el: im, out: leaveOut(im, r), c: { src: bestSrc(im), w: Math.round(r.width), h: Math.round(r.height), y: Math.round(r.top + sy), alt: im.alt || '', kind: 'img' } });
   });
   D.querySelectorAll('body *').forEach(function (el) {
-    var bg = W.getComputedStyle(el).backgroundImage; var m = bg && bg.match(/url\\(["']?(.*?)["']?\\)/);
-    if (!m) return; var r = el.getBoundingClientRect();
-    if (r.width >= 400 && r.height >= 250) { var cb = { src: new URL(m[1], W.location.href).href, w: Math.round(r.width), h: Math.round(r.height), y: Math.round(r.top + sy), alt: '', kind: 'background' }; imgs.push(cb); imgEl.set(cb, el); }
+    if (seenEl.has(el)) return;
+    var u = bgUrl(el);
+    if (!u) return; var r = el.getBoundingClientRect();
+    if (r.width < MIN_W || r.height < MIN_H) return;
+    found.push({ el: el, out: leaveOut(el, r), c: { src: abs(u), w: Math.round(r.width), h: Math.round(r.height), y: Math.round(r.top + sy), alt: '', kind: 'background' } });
   });
+  var heroAt = -1;
+  if (topHeroSrc) found.forEach(function (x, i) { if (heroAt < 0 && x.c.src === topHeroSrc && x.c.y < SH && x.c.y + x.c.h > 0) heroAt = i; });
+  // Only stop the top window's slider when its slide is the hero picked here (layouts can differ).
+  if (frame && heroAt < 0) shotHit = null;
+  if (heroAt < 0 && heroEl) found.forEach(function (x, i) { if (heroAt < 0 && x.el === heroEl) heroAt = i; });
+  var imgs = []; var imgEl = new Map();
+  if (heroAt >= 0) { found[heroAt].c.hero = true; imgs.push(found[heroAt].c); imgEl.set(found[heroAt].c, found[heroAt].el); }
+  found.forEach(function (x, i) { if (i !== heroAt && !x.out) { imgs.push(x.c); imgEl.set(x.c, x.el); } });
   // Measure the content: the top window's scrollHeight follows its 100000px viewport, and
   // some builders (Pixieset) scroll an inner container, so the frame's scrollHeight is one screen.
   var pageHeight = 0;
@@ -224,6 +335,26 @@ export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
       // The hidden links' colors are not what shows; style the nav from a visible header link.
       var hdr = hidden[0].closest('header,[role="banner"]');
       navEls = hdr ? arr(hdr.querySelectorAll('a')).filter(function (a) { return vis(a) && !hiddenLink(a); }).slice(0, 1) : [];
+    }
+  }
+  if (!navLinks.length) {
+    // Hamburger: a menu button in the top band. Read the hidden menu's links by their text;
+    // if there are none, the site shows just "Menu" (never invent page names).
+    var menuRe = /menu|hamburger|burger|nav-toggle/i;
+    var menuBtn = arr(D.querySelectorAll('body *')).find(function (el) {
+      if (el.id === '${FRAME_ID}') return false;
+      var r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0 || r.width > 300 || r.height > 150 || r.top + sy >= 180 || r.bottom <= 0) return false;
+      var cs = W.getComputedStyle(el);
+      if (cs.visibility === 'hidden' || cs.display === 'none' || +cs.opacity === 0) return false;
+      return /^menu$/i.test(norm(el.innerText)) || menuRe.test((el.getAttribute('aria-label') || '') + ' ' + cls(el));
+    });
+    if (menuBtn) {
+      navLinks = arr(D.querySelectorAll('nav a, [role="navigation"] a, [class*="menu" i] a, [id*="menu" i] a'))
+        .filter(function (a) { return !a.closest('footer,[role="contentinfo"]') && navText(a, norm(a.textContent)); })
+        .map(function (a) { return norm(a.textContent); });
+      if (!navLinks.length) navLinks = ['Menu'];
+      navTop = true; navEls = [menuBtn];
     }
   }
   var seenNav = {};
@@ -307,6 +438,31 @@ export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
     }
   }
   var logoEl = arr(D.querySelectorAll('img')).find(function (im) { var r = im.getBoundingClientRect(); return r.top + sy < 200 && r.width > 40 && (/logo/i.test(im.src + im.alt + im.className + ((im.closest('a,div') || {}).className || '')) || im.closest('header')); });
+  var logo = null;
+  if (logoEl) {
+    logo = { src: logoEl.currentSrc || logoEl.src, w: Math.round(logoEl.getBoundingClientRect().width), h: Math.round(logoEl.getBoundingClientRect().height) };
+  } else {
+    // The brand link: the first link in the header with no text that holds an <img> or inline <svg>.
+    var hdrBand = D.querySelector('header,[role="banner"]');
+    var bandLinks = hdrBand ? arr(hdrBand.querySelectorAll('a')) : arr(D.querySelectorAll('a')).filter(function (a) { return docY(a) < 200; });
+    for (var bl = 0; bl < bandLinks.length && !logo; bl++) {
+      if (norm(bandLinks[bl].innerText)) continue;
+      var mark = arr(bandLinks[bl].querySelectorAll('img,svg')).find(function (m) { var r = m.getBoundingClientRect(); return r.top + sy < 200 && r.width > 40 && r.height > 0; });
+      if (!mark) continue;
+      var mr = mark.getBoundingClientRect();
+      if (mark.tagName === 'IMG') { logo = { src: mark.currentSrc || mark.src, w: Math.round(mr.width), h: Math.round(mr.height) }; break; }
+      try {
+        // Inline SVG: serialize it with its shown colors so it renders the same as a file.
+        var svgC = mark.cloneNode(true);
+        var origs = arr(mark.querySelectorAll('*')), clones = arr(svgC.querySelectorAll('*'));
+        origs.forEach(function (o, oi) { var oc = W.getComputedStyle(o); if (clones[oi]) { clones[oi].setAttribute('fill', oc.fill); clones[oi].setAttribute('stroke', oc.stroke); } });
+        svgC.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        svgC.setAttribute('width', String(Math.round(mr.width))); svgC.setAttribute('height', String(Math.round(mr.height)));
+        svgC.style.color = W.getComputedStyle(mark).color;
+        logo = { src: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(new W.XMLSerializer().serializeToString(svgC)), w: Math.round(mr.width), h: Math.round(mr.height) };
+      } catch (e) {}
+    }
+  }
   var firstScreen = rows.filter(function (r) { return r.y < SH; });
   var biggest = firstScreen.slice().sort(function (a, b) { return b.fs - a.fs; })[0];
   var bodyP = rows.find(function (r) { return r.tag === 'p' && r.text.length > 80; });
@@ -325,7 +481,7 @@ export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
     metaDesc: (D.querySelector('meta[name=description]') || {}).content || '',
     rows: rows, imgs: imgs, nav: navLinks,
     navTop: navTop, navOverPhoto: navOverPhoto, navBg: navBg, navColor: navColor,
-    logo: logoEl ? { src: logoEl.currentSrc || logoEl.src, w: Math.round(logoEl.getBoundingClientRect().width), h: Math.round(logoEl.getBoundingClientRect().height) } : null,
+    logo: logo,
     fonts: { heading: biggest ? biggest.ff : '', headingWeight: biggest ? biggest.fw : '', body: bodyP ? bodyP.ff : '' },
     uppercaseHeadings: biggest ? biggest.tt === 'uppercase' : false,
     accent: accent,
@@ -334,5 +490,19 @@ export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
   });
   var hf = document.getElementById('${FRAME_ID}');
   if (hf) hf.remove();
+  if (shotHit) {
+    // Stop the slideshow (clear the page's timers, finish its transitions) and show the hero slide
+    // fully, so the screenshot shows the slide found above; a running slider would move on first.
+    // Timer functions are not replaced: the capture browser may still poll with them.
+    try {
+      var lastTimer = window.setTimeout(function () {}, 0);
+      for (var ti = 0; ti <= lastTimer; ti++) { window.clearTimeout(ti); window.clearInterval(ti); }
+      (document.getAnimations ? document.getAnimations() : []).forEach(function (a) { try { a.finish(); } catch (e) { a.pause(); } });
+      var shared = shotHit.el.parentElement;
+      while (shared && !shotHit.layers.every(function (l) { return shared.contains(l); })) shared = shared.parentElement;
+      shotHit.layers.forEach(function (l) { if (l !== shotHit.el && !l.contains(shotHit.el)) l.style.setProperty('opacity', '0', 'important'); });
+      for (var se1 = shotHit.el; se1 && se1 !== shared; se1 = se1.parentElement) se1.style.setProperty('opacity', '1', 'important');
+    } catch (e) {}
+  }
   return result;
 })()`;

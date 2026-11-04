@@ -91,6 +91,15 @@ describe("contactSheetHtml", () => {
     expect(h).not.toContain("data:d");
     expect(h).toContain("width:1600px;height:900px");
   });
+
+  it("puts TODAY in the bottom-left corner (off the site's logo) and the photo numbers top-left", () => {
+    const h = contactSheetHtml(IMG, ["data:a"]);
+    const label = (t: string) => h.match(new RegExp(`<div style="([^"]*)">${t}</div>`))?.[1] ?? "";
+    expect(label("TODAY")).toContain("left:12px;bottom:12px");
+    expect(label("TODAY")).not.toContain("top:");
+    expect(label("1")).toContain("left:12px;top:12px");
+    expect(label("TODAY").replace("bottom:", "top:")).toBe(label("1"));
+  });
 });
 
 describe("pdfFileName", () => {
