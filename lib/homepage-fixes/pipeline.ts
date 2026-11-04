@@ -200,33 +200,56 @@ async function run(input: RunInput, stages: Partial<Stages>): Promise<PipelineRe
     usage = addUsage(usage, l.usage);
     return { after, l };
   };
-  const lookIssue = (l: { faces_ok: boolean; headline_readable: boolean; looks_like_template: boolean }): RuleIssue => ({
-    field: "first_section", level: "error",
-    message: `look check: ${[
-      !l.faces_ok && "a face is cut off or covered",
-      !l.headline_readable && "the headline is hard to read",
-      l.looks_like_template && "it looks like a generic template",
-    ].filter(Boolean).join("; ")}.`,
-  });
+  type Look = { faces_ok: boolean; headline_readable: boolean; looks_like_template: boolean };
+  const lookProblems = (l: Look) => [
+    !l.faces_ok && "a face is cut off or covered",
+    !l.headline_readable && "the headline is hard to read",
+    l.looks_like_template && "it looks like a generic template",
+  ].filter((p): p is string => !!p);
+  const lookMessage = (l: Look) => `look check: ${lookProblems(l).join("; ")}.`;
+  const lookIssue = (l: Look): RuleIssue => ({ field: "first_section", level: "error", message: lookMessage(l) });
+
+  // Every render tried, so the best one can go out if none passes.
+  const shots: { section: FirstSection; shot: Awaited<ReturnType<typeof look>> }[] = [];
+  const tryLook = async (sec: FirstSection, index: number) => {
+    const shot = await look(sec, index);
+    shots.push({ section: sec, shot });
+    return shot;
+  };
 
   const base = content.first_section;
   let section = base;
-  let shot = await look(section, photoIndex);
+  let shot = await tryLook(section, photoIndex);
+  let lookFlag: string | null = null;
   if (!shot.l.ok) {
     if (!hasTime()) return outOfTime("the look-check re-render", [...issues, lookIssue(shot.l)]);
     section = { ...base, layout: written.alt_layout, photo_focus: written.alt_photo_focus };
-    shot = await look(section, photoIndex);
+    shot = await tryLook(section, photoIndex);
   }
   if (!shot.l.ok) {
     const n = capture.photos.length;
     const next = n > 1 ? (photoIndex + 1) % n : -1;
-    if (next < 0) return held("look check failed", [...issues, lookIssue(shot.l)]);
-    if (!hasTime()) return outOfTime("the next-photo look check", [...issues, lookIssue(shot.l)]);
-    section = { ...base, photo: photoKey(next, capture.photos[next].mime), photo_focus: NEXT_PHOTO_FOCUS };
-    shot = await look(section, next);
-    if (!shot.l.ok) return held("look check failed", [...issues, lookIssue(shot.l)]);
+    if (next >= 0) {
+      if (!hasTime()) return outOfTime("the next-photo look check", [...issues, lookIssue(shot.l)]);
+      section = { ...base, photo: photoKey(next, capture.photos[next].mime), photo_focus: NEXT_PHOTO_FOCUS };
+      shot = await tryLook(section, next);
+    }
+  }
+  if (!shot.l.ok) {
+    // Still failing after the last allowed re-render: the look check is advisory, not a hold (controller
+    // ruling, 2026-11-04). Send the render with the fewest problems (ties: the latest), keep the
+    // problem as a warning, and tell Maggie in her notes. Copy rule errors still hold, above.
+    const best = shots.reduce((m, c) => (lookProblems(c.shot.l).length <= lookProblems(m.shot.l).length ? c : m));
+    section = best.section;
+    shot = best.shot;
+    lookFlag = lookMessage(shot.l);
+    issues = [...issues, { field: "first_section", level: "warning", message: lookFlag }];
   }
   content = { ...content, first_section: section };
+  if (lookFlag) {
+    const note = `Mockup photo check flagged: ${lookFlag}`;
+    content = { ...content, notes_for_maggie: content.notes_for_maggie ? `${content.notes_for_maggie}\n${note}` : note };
+  }
   const after = shot.after;
   const imgs = { before: beforeUri, after: dataUri({ data: after, mime: "image/jpeg" }) };
 

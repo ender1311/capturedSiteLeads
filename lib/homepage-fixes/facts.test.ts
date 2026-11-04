@@ -305,6 +305,26 @@ describe("fixtures", () => {
     expect(wjohns.mockup.logo_text).toBe("William Johns Photography");
   });
 
+  it("logo_text never takes the footer copyright line (Willow, gate defect 1)", () => {
+    const f = facts({
+      title: "Home - WillowAnn Photography",
+      finalUrl: "https://willowannphotography.mypixieset.com/",
+      rows: [
+        row(39, "WillowAnn Photography", { tag: "span", href: "https://willowannphotography.mypixieset.com/" }),
+        row(45, "About", { tag: "a", href: "https://willowannphotography.mypixieset.com/about/" }),
+        row(1200, LONG),
+        row(2941, "© 2026 WillowAnn Photography"),
+      ],
+      sample: `WillowAnn Photography\nAbout\n${LONG}\n© 2026 WillowAnn Photography`,
+    });
+    expect(f.mockup.logo_text).toBe("WillowAnn Photography");
+  });
+
+  it("cleans nav_items for the mockup (Niki, gate defect 2)", () => {
+    const f = facts({ nav: ["workshop forphotographers", "meet niki", "Home", "the experience", "galleries", "journal", "contact", "experience"] });
+    expect(f.mockup.nav_items).toEqual(["workshop forphotographers", "meet niki", "Home", "the experience", "galleries", "contact"]);
+  });
+
   it("logo_image when the capture has a logo", () => {
     const c = capture(page());
     c.logo = { data: Buffer.from([1]), mime: "image/png" };

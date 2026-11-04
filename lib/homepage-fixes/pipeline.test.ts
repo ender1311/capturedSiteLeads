@@ -227,8 +227,12 @@ describe("runHomepageFixes", () => {
     if (r.outcome === "sent") expect(r.content.first_section.subline).toBe("Family photographer, in the city!");
   });
 
-  it("look check failure re-renders with alt settings, then next photo, then held", async () => {
-    const look = vi.fn(async () => ({ ok: false, faces_ok: false, headline_readable: true, looks_like_template: false, usage: usage(1, 1, 0) }));
+  it("look check failure re-renders with alt settings, then next photo, then sends the best render with a warning (gate defect 3)", async () => {
+    const fail = (faces_ok: boolean, headline_readable: boolean) => ({ ok: false, faces_ok, headline_readable, looks_like_template: false, usage: usage(1, 1, 0) });
+    const look = vi.fn()
+      .mockResolvedValueOnce(fail(false, false)) // two problems
+      .mockResolvedValueOnce(fail(false, true)) // one problem: the best
+      .mockResolvedValueOnce(fail(false, false));
     const { stages, calls, spies } = fakes({ look });
     const r = await runHomepageFixes(INPUT, stages);
     expect(calls.renderAfter).toHaveLength(3);
@@ -238,9 +242,30 @@ describe("runHomepageFixes", () => {
     expect(calls.renderAfter[1].s).toMatchObject({ layout: "center", photo_focus: "50% 20%", photo: "photos/photo-01.jpg" });
     expect(calls.renderAfter[2].s).toMatchObject({ photo_focus: "50% 40%", photo: "photos/photo-02.webp" });
     expect(calls.renderAfter[2].photo).toBe(uri(PHOTO2, "image/webp"));
-    expect(r.outcome).toBe("held");
-    if (r.outcome === "held") expect(r.reason).toMatch(/look check/i);
-    expect(spies.renderPdf).not.toHaveBeenCalled();
+    expect(r.outcome).toBe("sent");
+    if (r.outcome !== "sent") return;
+    expect(r.after).toEqual(Buffer.from("after-2"));
+    expect(r.content.first_section).toMatchObject({ layout: "center", photo_focus: "50% 20%", photo: "photos/photo-01.jpg" });
+    expect(r.content.notes_for_maggie).toContain("Mockup photo check flagged: look check: a face is cut off or covered.");
+    expect(r.content.notes_for_maggie).toContain(REPORT.notes_for_maggie);
+    expect(spies.renderPdf).toHaveBeenCalledTimes(1);
+    expect((spies.renderPdf.mock.calls[0][0] as string)).toContain(uri(Buffer.from("after-2"), "image/jpeg"));
+  });
+
+  it("ties on look-check problems go to the last render", async () => {
+    const look = vi.fn(async () => ({ ok: false, faces_ok: false, headline_readable: true, looks_like_template: false, usage: usage(1, 1, 0) }));
+    const { stages } = fakes({ look });
+    const r = await runHomepageFixes(INPUT, stages);
+    expect(r.outcome).toBe("sent");
+    if (r.outcome === "sent") expect(r.after).toEqual(Buffer.from("after-3"));
+  });
+
+  it("copy rule errors still hold, whatever the look check says", async () => {
+    const bad = { ...structuredClone(REPORT), headline: "Elevate Your Story" };
+    const look = vi.fn(async () => ({ ok: false, faces_ok: false, headline_readable: true, looks_like_template: false, usage: usage(1, 1, 0) }));
+    const { stages } = fakes({ write: vi.fn(async () => ({ written: bad as Written, usage: usage(1, 1, 0) })), look });
+    const r = await runHomepageFixes(INPUT, stages);
+    expect(r).toMatchObject({ outcome: "held", reason: "rule check failed after one repair" });
   });
 
   it("look check passing on the alt settings keeps them", async () => {
@@ -262,7 +287,8 @@ describe("runHomepageFixes", () => {
     const { stages, calls } = fakes({ look }, capture({}, 1));
     const r = await runHomepageFixes(INPUT, stages);
     expect(calls.renderAfter).toHaveLength(2);
-    expect(r.outcome).toBe("held");
+    expect(r.outcome).toBe("sent"); // gate defect 3: the best render goes out, flagged for Maggie
+    if (r.outcome === "sent") expect(r.content.notes_for_maggie).toMatch(/Mockup photo check flagged: look check: a face is cut off/);
   });
 
   it("overflow triggers one repair asking to shorten the overflowing field, then held if still overflowing", async () => {

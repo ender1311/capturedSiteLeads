@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { cleanSection } from "./mockup-clean";
 import type { FirstSection, ReportContent } from "./types";
 
 // Ported from the skill's scripts/build.mjs. Only change: images arrive as data URIs.
@@ -36,7 +37,8 @@ const gfont = (f?: string) =>
     ? `family=${encodeURIComponent(f).replace(/%20/g, "+")}:wght@300;400;500;600;700`
     : "";
 
-export function firstSectionHtml(s: FirstSection, photoDataUri: string, logoDataUri?: string): string {
+export function firstSectionHtml(section: FirstSection, photoDataUri: string, logoDataUri?: string): string {
+  const s = cleanSection(section);
   const layout = s.layout || "left";
   const hf = cssFont(s.heading_font || "") || "Playfair Display";
   const bf = cssFont(s.body_font || "") || "Montserrat";

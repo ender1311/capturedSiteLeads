@@ -122,6 +122,20 @@ describe("firstSectionHtml", () => {
   });
 });
 
+describe("firstSectionHtml cleans brand and nav (gate defects 1, 2)", () => {
+  it("renders at most 6 deduped nav items and no copyright in the brand", () => {
+    const h = firstSectionHtml({
+      ...(gabby.first_section as FirstSection),
+      logo_text: "© 2026 WillowAnn Photography",
+      nav_items: ["workshop forphotographers", "meet niki", "Home", "the experience", "galleries", "journal", "contact", "experience"],
+    }, IMG);
+    const spans = [...h.matchAll(/<span>([^<]*)<\/span>/g)].map((m) => m[1]);
+    expect(spans).toEqual(["workshop forphotographers", "meet niki", "Home", "the experience", "galleries", "contact"]);
+    expect(h).toContain(">WillowAnn Photography</b>");
+    expect(h).not.toContain("©");
+  });
+});
+
 describe("contactSheetHtml", () => {
   it("labels up to 3 photos and TODAY", () => {
     const h = contactSheetHtml(IMG, ["data:image/png;base64,AAAA", "data:image/png;base64,BBBB", "data:image/png;base64,CCCC", "data:image/png;base64,DDDD"]);

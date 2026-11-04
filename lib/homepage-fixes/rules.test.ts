@@ -158,3 +158,14 @@ describe("rules", () => {
     expect(errorsOf(c).some((i) => i.field === "fixes[1].noticed" && /quote/i.test(i.message))).toBe(true);
   });
 });
+
+describe("autoFix cleans the mockup's brand and nav (gate defects 1, 2)", () => {
+  it("strips a copyright from logo_text and tidies nav_items", () => {
+    const c = clone();
+    c.first_section.logo_text = "© 2026 WillowAnn Photography";
+    c.first_section.nav_items = ["workshop forphotographers", "meet niki", "Home", "the experience", "galleries", "journal", "contact", "experience"];
+    const f = autoFix(c).first_section;
+    expect(f.logo_text).toBe("WillowAnn Photography");
+    expect(f.nav_items).toEqual(["workshop forphotographers", "meet niki", "Home", "the experience", "galleries", "contact"]);
+  });
+});

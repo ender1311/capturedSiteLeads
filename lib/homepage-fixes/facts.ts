@@ -1,4 +1,5 @@
 import { toGoogleFont } from "./fonts";
+import { cleanBrand, cleanNav } from "./mockup-clean";
 import type { Capture, FirstSection, FitFlag, PageData } from "./types";
 
 // Turns the capture into the compact fact sheet Gemini reads, plus the mockup settings.
@@ -548,7 +549,7 @@ export function buildFacts(c: Capture): Facts {
   const mockup: ScriptMockup = {
     nav_position: page.navTop ? "top" : "bottom",
     nav_style: page.navOverPhoto ? "over" : "bar",
-    nav_items: page.nav,
+    nav_items: cleanNav(page.nav),
     heading_font: toGoogleFont(page.fonts.heading, "heading"),
     body_font: toGoogleFont(page.fonts.body || mostCommon(paraBlocks.map((b) => b.ff)) || "", "body"),
     uppercase_headline: page.uppercaseHeadings,
@@ -573,11 +574,15 @@ export function buildFacts(c: Capture): Facts {
 }
 
 /** The sample (innerText) line that holds all of the row's words in order plus a few more, else the row text. */
+const COPYRIGHT_RE = /©|\(c\)|\bcopyright\b|all rights reserved/i;
+
 function fromSample(text: string, sampleLines: string[]): string {
   const want = key(text).split(" ").filter(Boolean);
   if (!want.length) return text;
   const rowCaps = text === text.toUpperCase();
   for (const line of sampleLines) {
+    // A footer copyright line ("© 2026 Jane Doe Photography") is never what a row means.
+    if (COPYRIGHT_RE.test(line) && !COPYRIGHT_RE.test(text)) continue;
     const have = key(line).split(" ").filter(Boolean);
     if (have.length <= want.length || have.length > want.length + 3) continue;
     // innerText applies text-transform; keep the row's own casing unless the row is caps too.
@@ -606,12 +611,12 @@ function logoExt(mime: string): string {
 function siteName(page: PageData, blocks: Block[], base: string): string {
   const homeLink = blocks.find((b) => b.y < 180 && b.href && hrefPath(b.href, base).label === "the homepage" && b.words <= 6);
   const parts = page.title.split(/\s+[-|–—:·•]\s+|\s*[|–—·•]\s*|(?<=[a-z])-(?=[A-Z])/).map(norm).filter(Boolean);
-  const cands = [...parts, ...(homeLink ? [homeLink.text] : [])];
+  const cands = [...parts, ...(homeLink ? [homeLink.text] : [])].map(cleanBrand).filter(Boolean);
   if (!cands.length) {
     try { return new URL(base).hostname.replace(/^www\./, ""); } catch { return ""; }
   }
   const score = (p: string) =>
-    (homeLink && key(homeLink.text) === key(p) ? 5 : 0) +
+    (homeLink && key(cleanBrand(homeLink.text)) === key(p) ? 5 : 0) +
     (/photo|studio|films?|creative|\bco\b/i.test(p) ? 1 : 0) -
     (/photographer\b|based|wedding|ready|serving|&/i.test(p) ? 2 : 0);
   const best = cands.reduce((m, p) => (score(p) > score(m) ? p : m), cands[0]);

@@ -1,3 +1,4 @@
+import { cleanSection } from "./mockup-clean";
 import type { ReportContent } from "./types";
 
 export type RuleIssue = { field: string; level: "error" | "warning"; message: string };
@@ -61,6 +62,7 @@ export function fixText(t: string): string {
 
 export function autoFix(c: ReportContent): ReportContent {
   const n = structuredClone(c);
+  n.first_section = cleanSection(n.first_section);
   const s = n.first_section;
   s.headline = fixText(s.headline);
   if (s.subline) s.subline = fixText(s.subline);

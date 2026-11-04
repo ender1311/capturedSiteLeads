@@ -65,6 +65,16 @@ describe.skipIf(!hasChrome)("EXTRACT_SCRIPT nav pick (Chrome)", () => {
     expect(p.navColor).toBe("rgb(255, 255, 255)");
   });
 
+  // Niki's saved capture (before d0ef0d6) read "workshop forphotographers"; this pins the Showit shape.
+  it("hidden Showit nav link text: <br> and block children become spaces (gate defect 2)", async () => {
+    const p = await extract(`<header style="padding:20px"><a href="/" style="color:rgb(255, 255, 255)">Jane Doe Photography</a>
+      <div style="display:none"><nav>
+        <a href="/workshop"><nav class="se-t">workshop for<br>photographers<br></nav></a>
+        <a href="/about"><span>meet</span><div>jane</div></a>
+      </nav></div></header>`);
+    expect(p.nav).toEqual(["workshop for photographers", "meet jane"]);
+  });
+
   it("keeps un-triggered fade-ins (opacity 0 with an animation class or transition) in rows", async () => {
     const p = await extract(`<h1 class="preFade" style="opacity:0">A Fun Wedding Photographer</h1>
       <p style="opacity:0;transition:opacity 0.6s">About me copy that fades in</p>
