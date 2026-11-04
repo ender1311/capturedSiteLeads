@@ -324,6 +324,18 @@ describe.skipIf(!hasChrome)("EXTRACT_SCRIPT nav pick (Chrome)", () => {
     expect(p.navTop).toBe(true);
   });
 
+  it("hamburger: hidden link text with <br> and nested spans gets spaces, collapsed", async () => {
+    const p = await extract(`<div style="position:relative;height:120px"><div style="position:absolute;right:40px;top:40px">MENU</div></div>
+      <div class="site-menu" style="display:none"><a href="/w">workshop<br>for<span>photographers</span></a><a href="/m">  meet
+        niki </a></div>`);
+    expect(p.nav).toEqual(["workshop for photographers", "meet niki"]);
+  });
+
+  it("burger fallback: hidden header nav link with <br> reads with a space", async () => {
+    const p = await extract(`<header style="padding:20px"><nav style="visibility:hidden"><a href="/a">About<br>Me</a><a href="/c">Contact</a></nav></header>`);
+    expect(p.nav).toEqual(["About Me", "Contact"]);
+  });
+
   it("no menu button and no links: nav stays empty", async () => {
     const p = await extract(`<div style="padding:20px">Jane Doe</div><div class="menu-wrapper" style="display:none"><a href="/x">Hidden</a></div>`);
     expect(p.nav).toEqual([]);

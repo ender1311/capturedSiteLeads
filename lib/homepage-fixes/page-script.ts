@@ -297,6 +297,21 @@ export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
     var h = a.getAttribute('href') || '';
     return /^skip to/i.test(t) || h === '#main' || h === '#content' || h === '#main-content';
   };
+  // A link's text: innerText when it renders, else its text nodes joined with spaces (<br> → space).
+  var linkText = function (a) {
+    // innerText of a display:none element is just its textContent, so only trust it when it renders.
+    var shownText = a.getClientRects().length ? norm(a.innerText) : '';
+    if (shownText) return shownText;
+    var parts = [];
+    var walk = function (n) {
+      for (var c = n.firstChild; c; c = c.nextSibling) {
+        if (c.nodeType === 3) parts.push(c.textContent);
+        else if (c.nodeType === 1) { if (c.tagName === 'BR') parts.push(' '); else walk(c); }
+      }
+    };
+    walk(a);
+    return norm(parts.join(' '));
+  };
   var navText = function (a, t) { return t && t.length < 30 && !skipLink(a, t) && !siteNames[t.toLowerCase()]; };
   var linkEls = arr(D.querySelectorAll('a')).filter(function (a) { var t = norm(a.innerText); return vis(a) && !hiddenLink(a) && navText(a, t); });
   var zoneTop = linkEls.filter(function (a) { return docY(a) < 180; });
@@ -329,9 +344,9 @@ export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
   if (!navLinks.length) {
     // Visible nav missing (burger menu): read the header nav's links by their text.
     var hidden = arr(D.querySelectorAll('header nav a, header [role="navigation"] a, [role="banner"] nav a'))
-      .filter(function (a) { return navText(a, norm(a.textContent)); });
+      .filter(function (a) { return navText(a, linkText(a)); });
     if (hidden.length >= 2) {
-      navLinks = hidden.map(function (a) { return norm(a.textContent); }); navTop = true;
+      navLinks = hidden.map(linkText); navTop = true;
       // The hidden links' colors are not what shows; style the nav from a visible header link.
       var hdr = hidden[0].closest('header,[role="banner"]');
       navEls = hdr ? arr(hdr.querySelectorAll('a')).filter(function (a) { return vis(a) && !hiddenLink(a); }).slice(0, 1) : [];
@@ -351,8 +366,8 @@ export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
     });
     if (menuBtn) {
       navLinks = arr(D.querySelectorAll('nav a, [role="navigation"] a, [class*="menu" i] a, [id*="menu" i] a'))
-        .filter(function (a) { return !a.closest('footer,[role="contentinfo"]') && navText(a, norm(a.textContent)); })
-        .map(function (a) { return norm(a.textContent); });
+        .filter(function (a) { return !a.closest('footer,[role="contentinfo"]') && navText(a, linkText(a)); })
+        .map(linkText);
       if (!navLinks.length) navLinks = ['Menu'];
       navTop = true; navEls = [menuBtn];
     }

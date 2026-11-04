@@ -96,7 +96,7 @@ export function fillReport(c: ReportContent, imgs: { before: string; after: stri
     .replaceAll(`href="${TOUR}"`, () => `href="${TOUR_UTM}"`);
 }
 
-/** 1600x900 sheet for the look check: today's homepage on the left, up to 3 numbered photos on the right. */
+/** 1600x900 sheet for the look check: today's homepage on the left, up to 3 numbered photos on the right, each shown whole. */
 export function contactSheetHtml(before: string, photos: string[]): string {
   const ps = photos.slice(0, 3);
   // TODAY sits bottom-left so it does not cover the site's logo; photo numbers stay top-left.
@@ -105,7 +105,7 @@ export function contactSheetHtml(before: string, photos: string[]): string {
   const cells = ps
     .map(
       (p, i) =>
-        `<div style="position:relative;flex:1;min-height:0;background:#222"><img src="${esc(p)}" alt="" style="width:100%;height:100%;object-fit:cover;display:block">${label(String(i + 1))}</div>`
+        `<div style="position:relative;flex:1;min-height:0;background:#1a1a1a"><img src="${esc(p)}" alt="" style="width:100%;height:100%;object-fit:contain;display:block">${label(String(i + 1))}</div>`
     )
     .join("");
   return `<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0}</style></head><body><div id="sheet" style="width:1600px;height:900px;display:flex;gap:8px;background:#fff;overflow:hidden"><div style="position:relative;width:796px;height:900px;background:#222"><img src="${esc(before)}" alt="" style="width:100%;height:100%;object-fit:contain;object-position:top;display:block">${label("TODAY", "bottom")}</div><div style="width:796px;height:900px;display:flex;flex-direction:column;gap:8px">${cells}</div></div></body></html>`;

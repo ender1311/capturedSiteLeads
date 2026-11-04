@@ -92,6 +92,14 @@ describe("contactSheetHtml", () => {
     expect(h).toContain("width:1600px;height:900px");
   });
 
+  it("shows each photo whole (contain on #1a1a1a), not cropped", () => {
+    const h = contactSheetHtml(IMG, ["data:a", "data:b", "data:c"]);
+    expect(h).not.toContain("object-fit:cover");
+    const cells = h.match(/<div style="position:relative;flex:1;min-height:0;background:#1a1a1a"><img src="data:[abc]" alt="" style="[^"]*object-fit:contain[^"]*">/g) ?? [];
+    expect(cells).toHaveLength(3);
+    expect(h).toContain("width:1600px;height:900px");
+  });
+
   it("puts TODAY in the bottom-left corner (off the site's logo) and the photo numbers top-left", () => {
     const h = contactSheetHtml(IMG, ["data:a"]);
     const label = (t: string) => h.match(new RegExp(`<div style="([^"]*)">${t}</div>`))?.[1] ?? "";
