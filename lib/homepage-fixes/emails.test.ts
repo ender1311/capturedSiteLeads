@@ -9,6 +9,7 @@ const all = () => [
   reportEmail("Jane", PDF, false),
   cantSeeEmail("Jane", "couldnt_load"),
   cantSeeEmail("Jane", "not_live"),
+  cantSeeEmail("Jane", "too_little"),
   hobbyEmail("Jane", COMPLIMENT),
 ];
 
@@ -28,13 +29,27 @@ describe("homepage-fixes emails", () => {
     }
   });
 
-  it("every photographer email carries the Tour link and the sign-off", () => {
+  it("report and can't-see emails carry the Tour link; every email has the sign-off", () => {
     expect(TOUR_URL).toBe("https://capturedsites.com/tour/?utm_source=homepage-fixes&utm_medium=email&utm_campaign=homepage-fixes");
-    for (const e of all()) {
+    for (const e of all()) expect(e.text).toContain("Talk soon,\nMaggie\nCaptured Sites");
+    for (const e of all().slice(0, 5)) {
       expect(e.text).toContain(TOUR_URL);
       expect(e.html).toContain(TOUR_URL.replace(/&/g, "&amp;"));
-      expect(e.text).toContain("Talk soon,\nMaggie\nCaptured Sites");
     }
+    const report = "If you'd love to see what it looks like to have your whole website built this way, I'd love to show you around on a Captured Sites Tour.";
+    const cantSee = "If you'd ever like help with your website, I'd love to show you around on a Captured Sites Tour.";
+    expect(reportEmail("Jane", PDF, true).text).toContain(report);
+    for (const r of ["not_live", "too_little", "couldnt_load"] as const) {
+      expect(cantSeeEmail("Jane", r).text).toContain(cantSee);
+      expect(cantSeeEmail("Jane", r).text).not.toContain("built this way");
+    }
+  });
+
+  it("hobby email has no Tour line", () => {
+    const e = hobbyEmail("Jane", COMPLIMENT);
+    expect(e.text).not.toContain(TOUR_URL);
+    expect(e.html).not.toContain("capturedsites.com/tour");
+    expect(e.text).not.toContain("Tour");
   });
 
   it("uses inline styles only, no <style> blocks", () => {
@@ -82,6 +97,14 @@ describe("homepage-fixes emails", () => {
     );
     expect(b.text).toContain("Once it's live, come back to capturedsites.com/homepage-fixes and I'll make them for you.");
     expect(b.text).not.toContain("another address");
+
+    const c = cantSeeEmail("Jane", "too_little");
+    expect(c.subject).toBe("Jane, a quick note about your homepage fixes");
+    expect(c.text).toContain(
+      "Thanks so much for asking for your homepage fixes. My homepage review tool couldn't find enough on your homepage to make your fixes this time."
+    );
+    expect(c.text).toContain("If your site lives at another address, just reply with the link and I'll take care of it.");
+    expect(c.text).not.toContain("couldn't load");
   });
 
   it("hobbyEmail carries the compliment and the soft door", () => {

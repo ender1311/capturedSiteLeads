@@ -75,6 +75,7 @@ export async function sendPdfEmail(input: {
     body: JSON.stringify({ name: `delivery ${input.email} ${Date.now()}`.slice(0, 250) }),
   });
   const groupId = (await groupRes.json()).data.id as string;
+  let scheduled = false;
 
   try {
     await ml("/subscribers", {
@@ -108,6 +109,7 @@ export async function sendPdfEmail(input: {
       method: "POST",
       body: JSON.stringify({ delivery: "instant" }),
     });
+    scheduled = true;
 
     // Only remove the throwaway group once the campaign has actually sent —
     // deleting it earlier strips the queued campaign's recipients and
@@ -129,6 +131,12 @@ export async function sendPdfEmail(input: {
       console.warn(`Campaign ${campaignId} not sent after 120s; keeping group ${groupId}`);
     }
   } catch (err) {
+    // Once scheduled, the email is on its way: a polling hiccup must not delete
+    // the group (that cancels a queued send) or throw (the caller would resend).
+    if (scheduled) {
+      console.warn(`Polling campaign after scheduling failed; treating as sent and keeping group ${groupId}:`, (err as Error).message);
+      return;
+    }
     // a failed send should not leave an empty orphan group behind
     await ml(`/groups/${groupId}`, { method: "DELETE" }).catch(() => {});
     throw err;

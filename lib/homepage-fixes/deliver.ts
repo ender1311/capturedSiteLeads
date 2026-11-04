@@ -1,6 +1,6 @@
 import { put } from "@vercel/blob";
 import { addSubscriber, sendPdfEmail } from "@/lib/mailerlite";
-import { alertEmail, cantSeeEmail, hobbyEmail, reportEmail, type Email } from "./emails";
+import { alertEmail, cantSeeEmail, hobbyEmail, reportEmail, type CantSeeReason, type Email } from "./emails";
 import type { PipelineResult } from "./pipeline";
 import { pdfFileName } from "./render-html";
 import { updateHfLead, type HfOutcome } from "./store";
@@ -10,6 +10,9 @@ import { updateHfLead, type HfOutcome } from "./store";
 // The photographer's email always goes through Resend (PDF attached when it fits); only a Resend
 // error falls back to MailerLite's link-only campaign. MailerLite's subscriber upsert and the
 // alert emails never block anything: they log and move on.
+// Failures before the photographer's email goes out throw normally (safe to retry). Once it has
+// gone out, a later failure alerts and throws DeliveredNotRecordedError: retrying would send the
+// email twice.
 
 const DEFAULT_FROM = "Maggie | Captured Sites <maggie@capturedsites.com>";
 const MAGGIE = "maggie@capturedsites.com";
@@ -20,6 +23,34 @@ export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 export type DeliverLead = { name: string; email: string; siteUrl: string; goal: string };
 export type AlertLead = { id: string; name: string; email: string; site_url: string; error?: string };
 type Attachment = { filename: string; content: string };
+
+/** The photographer already has their email; only the bookkeeping after it failed. Never retry. */
+export class DeliveredNotRecordedError extends Error {
+  readonly leadId: string;
+  constructor(leadId: string, message: string, readonly original?: unknown) {
+    super(message);
+    this.name = "DeliveredNotRecordedError";
+    this.leadId = leadId;
+  }
+}
+
+async function afterSend(leadId: string, lead: DeliverLead, work: () => Promise<void>): Promise<void> {
+  try {
+    await work();
+  } catch (err) {
+    const message = `delivered but not recorded: ${err instanceof Error ? err.message : String(err)}`;
+    console.error(`Homepage fixes lead ${leadId}: ${message}`);
+    await sendAlert("failed", { id: leadId, name: lead.name, email: lead.email, site_url: lead.siteUrl, error: message });
+    throw new DeliveredNotRecordedError(leadId, message, err);
+  }
+}
+
+/** Which can't-see copy a pipeline reason gets. */
+export function cantSeeReason(reason: string): CantSeeReason {
+  if (reason === "COMING_SOON") return "not_live";
+  if (reason === "TOO_LITTLE_TEXT" || reason === "NO_PHOTO") return "too_little";
+  return "couldnt_load"; // unreachable, bot_check, empty, and failed reports
+}
 
 async function resendSend(to: string[], e: Email, attachments?: Attachment[]): Promise<void> {
   if (!process.env.RESEND_API_KEY) throw new Error("RESEND_API_KEY is not set");
@@ -63,7 +94,7 @@ async function upsertSubscriber(lead: DeliverLead, outcome: HfOutcome, extra: {
         hf_headline: extra.headline ?? "",
         hf_fix1_title: extra.fix1 ?? "",
         hf_fix2_title: extra.fix2 ?? "",
-        hf_sent_date: new Date().toISOString().slice(0, 10),
+        hf_sent_date: outcome === "sent" ? new Date().toISOString().slice(0, 10) : "",
       },
     });
   } catch (err) {
@@ -95,33 +126,38 @@ export async function deliver(leadId: string, lead: DeliverLead, result: Pipelin
         attachment: attach ? { filename: fileName, content: result.pdf.toString("base64") } : undefined,
         fallback: reportEmail(lead.name, pdf.url, false),
       });
-      await upsertSubscriber(lead, "sent", {
-        pdfUrl: pdf.url,
-        headline: result.content.first_section.headline,
-        fix1: result.content.fixes[0].title,
-        fix2: result.content.fixes[1].title,
-      });
-      await updateHfLead(leadId, {
-        outcome: "sent", pdf_url: pdf.url, before_url: before.url, after_url: after.url,
-        content: { ...result.content, fact_sheet: result.facts.sheet },
-        ...usageCols(result), model: result.model,
+      await afterSend(leadId, lead, async () => {
+        await upsertSubscriber(lead, "sent", {
+          pdfUrl: pdf.url,
+          headline: result.content.first_section.headline,
+          fix1: result.content.fixes[0].title,
+          fix2: result.content.fixes[1].title,
+        });
+        await updateHfLead(leadId, {
+          outcome: "sent", pdf_url: pdf.url, before_url: before.url, after_url: after.url,
+          content: { ...result.content, fact_sheet: result.facts.sheet },
+          ...usageCols(result), model: result.model,
+        });
       });
       return;
     }
     case "hobby": {
       await sendToPhotographer(lead, hobbyEmail(lead.name, result.compliment));
-      await upsertSubscriber(lead, "hobby");
-      await updateHfLead(leadId, {
-        outcome: "hobby", content: { compliment: result.compliment, fact_sheet: result.facts.sheet },
-        ...usageCols(result), model: result.model,
+      await afterSend(leadId, lead, async () => {
+        await upsertSubscriber(lead, "hobby");
+        await updateHfLead(leadId, {
+          outcome: "hobby", content: { compliment: result.compliment, fact_sheet: result.facts.sheet },
+          ...usageCols(result), model: result.model,
+        });
       });
       return;
     }
     case "cant_see": {
-      const reason = result.reason === "COMING_SOON" ? "not_live" : "couldnt_load";
-      await sendToPhotographer(lead, cantSeeEmail(lead.name, reason));
-      await upsertSubscriber(lead, "cant_see");
-      await updateHfLead(leadId, { outcome: "cant_see", content: { reason: result.reason }, ...usageCols(result) });
+      await sendToPhotographer(lead, cantSeeEmail(lead.name, cantSeeReason(result.reason)));
+      await afterSend(leadId, lead, async () => {
+        await upsertSubscriber(lead, "cant_see");
+        await updateHfLead(leadId, { outcome: "cant_see", content: { reason: result.reason }, ...usageCols(result) });
+      });
       return;
     }
     case "held": {

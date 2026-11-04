@@ -15,7 +15,7 @@ const h = vi.hoisted(() => {
 vi.mock("@/lib/db", () => ({ sql: () => h.sqlFn }));
 vi.mock("@vercel/blob", () => ({ put: h.put }));
 
-import { deliver, sendAlert } from "./deliver";
+import { DeliveredNotRecordedError, deliver, sendAlert } from "./deliver";
 
 type Call = { url: string; method: string; body: Record<string, unknown> | null };
 let calls: Call[] = [];
@@ -200,19 +200,84 @@ describe("deliver", () => {
     expect(String(email.body!.text)).toContain("Your beach sessions glow.");
     expect(email.body!.attachments).toBeUndefined();
     const fields = ml("/subscribers")[0].body!.fields as Record<string, string>;
-    expect(fields).toMatchObject({ pdf_url: "", hf_outcome: "hobby", hf_headline: "", hf_fix1_title: "", hf_fix2_title: "" });
+    expect(fields).toMatchObject({ pdf_url: "", hf_outcome: "hobby", hf_headline: "", hf_fix1_title: "", hf_fix2_title: "", hf_sent_date: "" });
     expect(lastUpdate()).toMatchObject({ outcome: "hobby", cost_usd: 0.0064 });
   });
 
-  it("deliver cant_see: COMING_SOON gets the not-live copy, anything else the couldn't-load copy", async () => {
+  it("deliver cant_see maps each reason to its copy", async () => {
     await deliver("lead-3", LEAD, { outcome: "cant_see", reason: "COMING_SOON", usage: USAGE });
     expect(String(resend()[0].body!.text)).toContain("isn't quite live yet");
-    expect((ml("/subscribers")[0].body!.fields as Record<string, string>).hf_outcome).toBe("cant_see");
+    const fields = ml("/subscribers")[0].body!.fields as Record<string, string>;
+    expect(fields.hf_outcome).toBe("cant_see");
+    expect(fields.hf_sent_date).toBe("");
     expect(lastUpdate().outcome).toBe("cant_see");
 
-    calls = [];
-    await deliver("lead-4", LEAD, { outcome: "cant_see", reason: "unreachable", usage: USAGE });
-    expect(String(resend()[0].body!.text)).toContain("couldn't load your homepage");
+    const cases = [
+      ["TOO_LITTLE_TEXT", "couldn't find enough on your homepage"],
+      ["NO_PHOTO", "couldn't find enough on your homepage"],
+      ["unreachable", "couldn't load your homepage"],
+      ["bot_check", "couldn't load your homepage"],
+      ["empty", "couldn't load your homepage"],
+    ] as const;
+    for (const [reason, line] of cases) {
+      calls = [];
+      await deliver("lead-4", LEAD, { outcome: "cant_see", reason, usage: USAGE });
+      expect(String(resend()[0].body!.text), reason).toContain(line);
+    }
+  });
+
+  describe("after the email has gone out", () => {
+    it("a failed row update alerts and throws DeliveredNotRecordedError, without a second send", async () => {
+      h.query.mockImplementation(async (text: string) => {
+        if (/^\s*update leads/i.test(text)) throw new Error("neon down");
+        return [];
+      });
+      const err = await deliver("lead-1", LEAD, sent()).catch((e) => e);
+      expect(err).toBeInstanceOf(DeliveredNotRecordedError);
+      expect(String(err.message)).toContain("neon down");
+      const toJane = resend().filter((c) => (c.body!.to as string[]).includes("jane@example.com"));
+      expect(toJane).toHaveLength(1);
+      const alert = resend().find((c) => String(c.body!.subject).startsWith("[Homepage Fixes] failed"));
+      expect(alert).toBeDefined();
+      expect(String(alert!.body!.text)).toContain("delivered but not recorded: neon down");
+      h.query.mockImplementation(async () => []);
+    });
+
+    it("hobby and cant_see post-send failures are not retryable either", async () => {
+      h.query.mockImplementation(async () => { throw new Error("neon down"); });
+      await expect(deliver("lead-2", LEAD, { outcome: "hobby", compliment: "Nice.", facts: FACTS, usage: USAGE, model: "m" }))
+        .rejects.toBeInstanceOf(DeliveredNotRecordedError);
+      await expect(deliver("lead-3", LEAD, { outcome: "cant_see", reason: "empty", usage: USAGE }))
+        .rejects.toBeInstanceOf(DeliveredNotRecordedError);
+      h.query.mockImplementation(async () => []);
+    });
+
+    it("counts a MailerLite fallback send as delivered", async () => {
+      resendStatus = 500;
+      h.query.mockImplementation(async () => { throw new Error("neon down"); });
+      await expect(deliver("lead-1", LEAD, sent())).rejects.toBeInstanceOf(DeliveredNotRecordedError);
+      expect(ml("/campaigns/ml-1/schedule")).toHaveLength(1);
+      h.query.mockImplementation(async () => []);
+    });
+  });
+
+  describe("before the email has gone out", () => {
+    it("a Blob failure throws a plain, retryable error and sends nothing", async () => {
+      h.put.mockRejectedValueOnce(new Error("blob down"));
+      const err = await deliver("lead-1", LEAD, sent()).catch((e) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(DeliveredNotRecordedError);
+      expect(resend()).toHaveLength(0);
+    });
+
+    it("Resend and the MailerLite fallback both failing throws a plain error", async () => {
+      resendStatus = 500;
+      mailerliteStatus = 500;
+      const err = await deliver("lead-1", LEAD, sent()).catch((e) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(DeliveredNotRecordedError);
+      expect(h.query).not.toHaveBeenCalled();
+    });
   });
 });
 

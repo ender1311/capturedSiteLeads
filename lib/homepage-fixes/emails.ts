@@ -18,10 +18,13 @@ const subjectLine = (s: string) => s.replace(/[\r\n]+/g, " ").trim();
 type Block =
   | { p: string }                              // a paragraph of plain text
   | { button: string; href: string }           // the pill button
-  | { tour: true }                             // the Captured Sites Tour line
+  | { tour: "report" | "cant_see" }            // the Captured Sites Tour line
   | { signoff: true };
 
-const TOUR_BEFORE = "If you'd love to see what it looks like to have your whole website built this way, I'd love to show you around on a ";
+const TOUR_BEFORE = {
+  report: "If you'd love to see what it looks like to have your whole website built this way, I'd love to show you around on a ",
+  cant_see: "If you'd ever like help with your website, I'd love to show you around on a ",
+};
 const TOUR_LINK_TEXT = "Captured Sites Tour";
 
 function blockHtml(b: Block): string {
@@ -32,7 +35,7 @@ function blockHtml(b: Block): string {
 </td></tr></table>`;
   }
   if ("tour" in b) {
-    return `<p style="margin:0 0 16px">${esc(TOUR_BEFORE)}<a href="${esc(TOUR_URL)}" style="color:#143133;font-weight:bold">${TOUR_LINK_TEXT}</a>.</p>`;
+    return `<p style="margin:0 0 16px">${esc(TOUR_BEFORE[b.tour])}<a href="${esc(TOUR_URL)}" style="color:#143133;font-weight:bold">${TOUR_LINK_TEXT}</a>.</p>`;
   }
   return `<p style="margin:32px 0 0">Talk soon,<br><strong>Maggie</strong><br>Captured Sites</p>`;
 }
@@ -40,7 +43,7 @@ function blockHtml(b: Block): string {
 function blockText(b: Block): string {
   if ("p" in b) return b.p;
   if ("button" in b) return `${b.button}: ${b.href}`;
-  if ("tour" in b) return `${TOUR_BEFORE}${TOUR_LINK_TEXT}.\n${TOUR_URL}`;
+  if ("tour" in b) return `${TOUR_BEFORE[b.tour]}${TOUR_LINK_TEXT}.\n${TOUR_URL}`;
   return "Talk soon,\nMaggie\nCaptured Sites";
 }
 
@@ -60,30 +63,28 @@ export function reportEmail(name: string, pdfUrl: string, attached: boolean): Em
     { p: "Your Top Homepage Fixes are ready. It's your own homepage, with your own photo and words, showing a new first section and two more opportunities to turn more visitors into inquiries." },
     ...(attached ? [{ p: "Your fixes are attached to this email, or you can view them online:" }] : []),
     { button: "See My Homepage Fixes", href: pdfUrl },
-    { tour: true },
+    { tour: "report" },
     { signoff: true },
   ];
   return { subject: subjectLine(`${name}, your homepage fixes are ready`), ...shell(blocks) };
 }
 
-export function cantSeeEmail(name: string, reason: "not_live" | "couldnt_load"): Email {
+export type CantSeeReason = "not_live" | "too_little" | "couldnt_load";
+
+export function cantSeeEmail(name: string, reason: CantSeeReason): Email {
   const thanks = "Thanks so much for asking for your homepage fixes.";
-  const blocks: Block[] =
+  const anotherAddress = "If your site lives at another address, just reply with the link and I'll take care of it.";
+  const body: string[] =
     reason === "not_live"
       ? [
-          { p: `Hi ${name},` },
-          { p: `${thanks} It looks like your homepage isn't quite live yet, so I wasn't able to make them this time.` },
-          { p: "Once it's live, come back to capturedsites.com/homepage-fixes and I'll make them for you." },
+          `${thanks} It looks like your homepage isn't quite live yet, so I wasn't able to make them this time.`,
+          "Once it's live, come back to capturedsites.com/homepage-fixes and I'll make them for you.",
         ]
-      : [
-          { p: `Hi ${name},` },
-          { p: `${thanks} My homepage review tool couldn't load your homepage, so I wasn't able to make them this time.` },
-          { p: "If your site lives at another address, just reply with the link and I'll take care of it." },
-        ];
-  return {
-    subject: subjectLine(`${name}, a quick note about your homepage fixes`),
-    ...shell([...blocks, { tour: true }, { signoff: true }]),
-  };
+      : reason === "too_little"
+        ? [`${thanks} My homepage review tool couldn't find enough on your homepage to make your fixes this time.`, anotherAddress]
+        : [`${thanks} My homepage review tool couldn't load your homepage, so I wasn't able to make them this time.`, anotherAddress];
+  const blocks: Block[] = [{ p: `Hi ${name},` }, ...body.map((p) => ({ p })), { tour: "cant_see" }, { signoff: true }];
+  return { subject: subjectLine(`${name}, a quick note about your homepage fixes`), ...shell(blocks) };
 }
 
 export function hobbyEmail(name: string, compliment: string): Email {
@@ -91,7 +92,6 @@ export function hobbyEmail(name: string, compliment: string): Email {
     { p: `Hi ${name},` },
     { p: compliment },
     { p: "It sounds like photography is something you love doing for yourself right now, so I won't fill your inbox with fixes. If it ever grows into something you want to take further, I'd love to help." },
-    { tour: true },
     { signoff: true },
   ];
   return { subject: subjectLine(`${name}, a little note about your website`), ...shell(blocks) };
