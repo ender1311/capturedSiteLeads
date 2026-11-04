@@ -105,16 +105,28 @@ export const DISMISS_SCRIPT = `(function () {${RESOLVE}
 // screenshot stays clean. Returns JSON.stringify(PageData without `dismissed`).
 export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
   W.scrollTo(0, 0); window.scrollTo(0, 0);
-  // Opacity 0 still counts as visible when the element (or an ancestor within 3 levels) is an
-  // un-triggered fade-in: an animation-ish class or attribute, or a transition/animation set.
-  var animRe = /fade|animate|reveal|aos|sqs-block|preFade|in-view/i;
-  var fadeIn = function (el) {
-    for (var e = el, k = 0; e && e.nodeType === 1 && k < 4; e = e.parentElement, k++) {
-      if (animRe.test(String(e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className || '')) || e.hasAttribute('data-aos') || e.hasAttribute('data-animation')) return true;
-      var cs = W.getComputedStyle(e);
-      if (/[1-9]/.test(cs.transitionDuration || '') || (cs.animationName && cs.animationName !== 'none')) return true;
+  // Opacity 0 still counts as visible for an un-triggered fade-in: a fade token class or
+  // data-aos/data-animation on the element or its parent, or (in main content only) a
+  // transition/animation on the element itself. Never inside hidden menus, dialogs or popups.
+  var fadeTok = /(^|[\s_-])(fade|fade-in|fadeIn|animate|animated|reveal|aos-init|aos-animate|preFade|in-view|wow)([\s_-]|$)/i;
+  var hideRe = /menu|drawer|overlay|modal|popup|lightbox|offcanvas|mobile-nav|burger/i;
+  var cls = function (e) { var c = e.className; return String(c && c.baseVal !== undefined ? c.baseVal : c || ''); };
+  var inHiddenUi = function (el) {
+    // Stop below body: builders put theme tokens on body (Squarespace: "header-overlay-…").
+    for (var e = el; e && e.nodeType === 1 && e !== D.body && e !== D.documentElement; e = e.parentElement) {
+      if (e.matches('[aria-hidden="true"],[role="dialog"],[aria-modal="true"],dialog')) return true;
+      if (hideRe.test(cls(e) + ' ' + (e.id || ''))) return true;
     }
     return false;
+  };
+  var fadeIn = function (el) {
+    if (inHiddenUi(el)) return false;
+    for (var e = el, k = 0; e && e.nodeType === 1 && k < 2; e = e.parentElement, k++) {
+      if (fadeTok.test(cls(e)) || e.hasAttribute('data-aos') || e.hasAttribute('data-animation')) return true;
+    }
+    if (el.closest('header,nav,footer,[role="banner"],[role="navigation"],[role="contentinfo"]')) return false;
+    var cs = W.getComputedStyle(el);
+    return /[1-9]/.test(cs.transitionDuration || '') || (!!cs.animationName && cs.animationName !== 'none');
   };
   var vis = function (el) { var r = el.getBoundingClientRect(); var s = W.getComputedStyle(el); return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none' && (+s.opacity !== 0 || fadeIn(el)); };
   var arr = function (list) { return Array.prototype.slice.call(list); };

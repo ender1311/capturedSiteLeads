@@ -69,14 +69,47 @@ describe.skipIf(!hasChrome)("EXTRACT_SCRIPT nav pick (Chrome)", () => {
     const p = await extract(`<h1 class="preFade" style="opacity:0">A Fun Wedding Photographer</h1>
       <p style="opacity:0;transition:opacity 0.6s">About me copy that fades in</p>
       <div class="sqs-block"><div><p style="opacity:0">Nested in a block</p></div></div>
+      <div class="fadeIn"><p style="opacity:0">Parent fades in</p></div>
       <p style="opacity:0">Really invisible text</p>
       <p class="fade-in" style="visibility:hidden">Hidden menu text</p>`);
     const texts = p.rows.map((r) => r.text);
     expect(texts).toContain("A Fun Wedding Photographer");
     expect(texts).toContain("About me copy that fades in");
-    expect(texts).toContain("Nested in a block");
+    expect(texts).not.toContain("Nested in a block"); // evidence must be on the element or its parent
+    expect(texts).toContain("Parent fades in");
     expect(texts).not.toContain("Really invisible text");
     expect(texts).not.toContain("Hidden menu text");
+  });
+
+  it("excludes an opacity-0 mobile menu with a transition inside nav", async () => {
+    const p = await extract(`<h1 style="margin:200px 40px">Hero headline</h1>
+      <nav><div class="mobile-menu" style="opacity:0;transition:opacity .3s;position:absolute;top:0;left:0;width:400px">
+        <p style="opacity:0;transition:opacity .3s">Menu tagline text</p><a href="/x" class="fade" style="opacity:0">Menu link</a></div></nav>`);
+    const texts = p.rows.map((r) => r.text);
+    expect(texts).toContain("Hero headline");
+    expect(texts).not.toContain("Menu tagline text");
+    expect(texts).not.toContain("Menu link");
+  });
+
+  it("excludes an opacity-0 role=dialog popup with a transition", async () => {
+    const p = await extract(`<div role="dialog" style="opacity:0;transition:opacity .4s;position:fixed;top:100px;left:100px;width:500px">
+      <p style="opacity:0;transition:opacity .4s">Join my list for a discount</p><p class="preFade" style="opacity:0">Sign up now</p></div>`);
+    const texts = p.rows.map((r) => r.text);
+    expect(texts).not.toContain("Join my list for a discount");
+    expect(texts).not.toContain("Sign up now");
+  });
+
+  it("ignores theme tokens on body when checking for hidden menus (Squarespace)", async () => {
+    const p = await extract(`<script>document.body.className = "header-overlay-alignment-center tweak-mobile-menu-burger";</script>
+      <h1 class="preFade" style="opacity:0">A Fun Wedding Photographer</h1>`);
+    expect(p.rows.map((r) => r.text)).toContain("A Fun Wedding Photographer");
+  });
+
+  it("includes an opacity-0 .preFade hero headline", async () => {
+    const p = await extract(`<section><div style="padding-top:300px"><h1 class="preFade" style="opacity:0;font-size:60px">Your Friend With the Camera</h1></div></section>`);
+    const h = p.rows.find((r) => r.text === "Your Friend With the Camera");
+    expect(h?.tag).toBe("h1");
+    expect(p.fonts.heading).not.toBe("");
   });
 
   const photo = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="#456"/></svg>')}`;
