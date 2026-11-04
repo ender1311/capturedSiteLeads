@@ -28,6 +28,7 @@ const gabby = JSON.parse(
 
 const reportJson = {
   fit: "report",
+  compliment: "",
   photo_choice: 1,
   photo_focus: "50% 35%",
   alt_photo_focus: "50% 20%",
@@ -44,6 +45,12 @@ const reportJson = {
   ],
   notes_for_maggie: "notes",
 };
+
+// Every wire field is required, so a hobby answer fills the report fields with "" / [].
+const hobbyJson = (compliment: string) => ({
+  ...reportJson, fit: "hobby", compliment, photo_choice: 1, photo_focus: "", alt_photo_focus: "", headline: "", subline: "",
+  button: "", first_section_changes: [], fixes: [], notes_for_maggie: "",
+});
 
 type MockOpts = { json: unknown; input?: number; output?: number; providerMetadata?: Record<string, Record<string, unknown>> };
 function mock({ json, input = 100, output = 50, providerMetadata }: MockOpts) {
@@ -172,7 +179,7 @@ describe("writeReport", () => {
   });
 
   it("parses the hobby shape", async () => {
-    const { written } = await writeReport({ ...input, model: mock({ json: { fit: "hobby", compliment: "Lovely colors." } }) });
+    const { written } = await writeReport({ ...input, model: mock({ json: hobbyJson("Lovely colors.") }) });
     expect(written).toEqual({ fit: "hobby", compliment: "Lovely colors." });
   });
 
@@ -191,15 +198,13 @@ describe("writeReport", () => {
     expect(fmt.schema.type).toBe("object");
     expect(fmt.schema.anyOf).toBeUndefined();
     expect(fmt.schema.oneOf).toBeUndefined();
-    expect(fmt.schema.required).toEqual(["fit"]);
+    expect(fmt.schema.required).toEqual(Object.keys(reportJson));
   });
 
   for (const n of [1, 2]) {
     it(`caps photo_choice at photoCount=${n}`, async () => {
       const m = mock({ json: { ...reportJson, photo_choice: n } });
       const { written } = await writeReport({ ...input, photoCount: n, model: m });
-      const fmt = m.doGenerateCalls[0].responseFormat as unknown as { schema: { properties: { photo_choice: { maximum: number } } } };
-      expect(fmt.schema.properties.photo_choice.maximum).toBe(n);
       expect(promptText(m)).toContain(n === 1 ? "photo candidate 1." : "photo candidates 1 to 2.");
       if (written.fit === "report") expect(written.photo_choice).toBe(n);
     });
@@ -211,7 +216,7 @@ describe("writeReport", () => {
     expect(m.doGenerateCalls).toHaveLength(2); // retried once
   });
 
-  it("retries once with minimal thinking after a truncated answer and sums usage", async () => {
+  it("retries once after a truncated answer and sums usage", async () => {
     const m = mockSeq([
       { text: '{"fit":"report","headline":"Your Fri', finish: "length", input: 5000, output: 2000 },
       { text: JSON.stringify(reportJson), input: 5000, output: 1200 },
@@ -220,32 +225,32 @@ describe("writeReport", () => {
     expect(written.fit).toBe("report");
     expect(m.doGenerateCalls).toHaveLength(2);
     expect(thinking(m, 0)).toBe("low");
-    expect(thinking(m, 1)).toBe("minimal");
+    expect(thinking(m, 1)).toBe("low"); // gemini-3.8-flash rejects "minimal"
     expect(m.doGenerateCalls[1].maxOutputTokens).toBe(2000);
     expect(usage).toEqual({ inputTokens: 10000, outputTokens: 3200, calls: 2, costUsd: expect.closeTo(costOf({ inputTokens: 10000, outputTokens: 3200 }, MODEL), 9) });
   });
 
   it("retries once when a report is missing fields", async () => {
-    const { headline: _h, fixes: _f, ...partial } = reportJson;
-    void _h; void _f;
+    const partial = { ...reportJson, headline: " ", fixes: [reportJson.fixes[0]] };
     const m = mockSeq([{ text: JSON.stringify(partial) }, { text: JSON.stringify(reportJson) }]);
     const { written, usage } = await writeReport({ ...input, model: m });
     expect(written.fit).toBe("report");
     expect(usage.calls).toBe(2);
-    expect(thinking(m, 1)).toBe("minimal");
+    expect(thinking(m, 1)).toBe("low");
   });
 
   it("throws the typed missing-fields error when the retry is incomplete too", async () => {
-    const m = mockSeq([{ text: JSON.stringify({ fit: "report", headline: "H" }) }]);
+    const m = mockSeq([{ text: JSON.stringify({ ...reportJson, notes_for_maggie: "", fixes: [] }) }]);
     const err = await writeReport({ ...input, model: m }).catch((e) => e);
     expect(err).toBeInstanceOf(WrittenIncompleteError);
     expect((err as WrittenIncompleteError).missing).toContain("fixes");
+    expect((err as WrittenIncompleteError).missing).toContain("notes_for_maggie");
     expect((err as WrittenIncompleteError).missing).not.toContain("headline");
     expect(m.doGenerateCalls).toHaveLength(2);
   });
 
   it("treats a hobby answer without a compliment as incomplete", async () => {
-    const m = mockSeq([{ text: '{"fit":"hobby"}' }, { text: '{"fit":"hobby","compliment":"Lovely colors."}' }]);
+    const m = mockSeq([{ text: JSON.stringify(hobbyJson("")) }, { text: JSON.stringify(hobbyJson("Lovely colors.")) }]);
     const { written } = await writeReport({ ...input, model: m });
     expect(written).toEqual({ fit: "hobby", compliment: "Lovely colors." });
   });
@@ -280,7 +285,7 @@ describe("repairFields", () => {
     expect(content.first_section_changes).toEqual(gabby.first_section_changes);
     expect(gabby.fixes[0].title).toBe("Let your story show what sets you apart"); // input not mutated
     expect(usage.calls).toBe(1);
-    expect(thinking(m, 0)).toBe("minimal");
+    expect(thinking(m, 0)).toBe("low");
     expect(m.doGenerateCalls[0].maxOutputTokens).toBe(1500);
     expect(m.doGenerateCalls[0].temperature).toBeUndefined();
     expect(p).toContain('Keep any exact quote from their site unchanged, even if it contains \\"her\\", \\"!\\" or a price.');
@@ -359,7 +364,7 @@ describe("lookCheck", () => {
       expect(r.ok).toBe(ok);
       expect(r).toMatchObject({ faces_ok, headline_readable, looks_like_template });
       expect(m.doGenerateCalls[0].maxOutputTokens).toBe(1000);
-      expect(thinking(m, 0)).toBe("minimal");
+      expect(thinking(m, 0)).toBe("low");
     });
   }
 });
@@ -499,7 +504,7 @@ describe("rate limits", () => {
       doGenerate: async () => {
         if (i++ === 0) throw err429();
         return {
-          content: [{ type: "text", text: JSON.stringify({ fit: "hobby", compliment: "Nice." }) }],
+          content: [{ type: "text", text: JSON.stringify(hobbyJson("Nice.")) }],
           finishReason: { unified: "stop", raw: undefined },
           usage: { inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: 1, reasoning: undefined } },
           warnings: [],

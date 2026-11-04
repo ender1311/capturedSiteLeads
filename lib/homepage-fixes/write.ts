@@ -43,33 +43,35 @@ const hobbySchema = z.object({ fit: z.enum(["hobby"]), compliment: z.string() })
 // The validated result shape. The model itself gets the flat wireSchema below.
 export const writtenSchema: z.ZodType<Written> = z.union([reportSchema, hobbySchema]);
 
-const REPORT_FIELDS = [
-  "photo_choice", "photo_focus", "alt_photo_focus", "layout", "alt_layout", "eyebrow", "headline", "subline",
-  "button", "first_section_changes", "fixes", "notes_for_maggie",
-] as const;
+const TEXT_FIELDS = ["photo_focus", "alt_photo_focus", "headline", "subline", "button", "notes_for_maggie"] as const;
 
-// One flat object (no root anyOf): every report field optional, checked after generation.
-function wireSchema(photoCount: number) {
+// One flat object (no root anyOf) with every field required: in the live test (2026-11-03) optional
+// fields let gemini-3.8-flash skip around and loop inside one string until the token cap. The
+// fit that does not apply gets "" or []. @ai-sdk/google strips maxLength, minItems/maxItems and
+// minimum/maximum from the schema it sends, so lengths and ranges are checked here in toWritten.
+function wireSchema() {
+  const str = (d: string) => z.string().describe(d);
   return z.object({
     fit: z.enum(["report", "hobby"]),
-    compliment: z.string().optional(),
-    photo_choice: z.number().int().min(1).max(photoCount).optional(),
-    photo_focus: z.string().describe('CSS background-position, like "50% 35%"').optional(),
-    alt_photo_focus: z.string().optional(),
-    layout: layout.optional(),
-    alt_layout: layout.optional(),
-    eyebrow: z.string().optional(),
-    headline: z.string().optional(),
-    subline: z.string().optional(),
-    button: z.string().optional(),
-    first_section_changes: z.array(z.string()).length(3).optional(),
-    fixes: z.array(z.object({ title: z.string(), noticed: z.string(), why: z.string(), changes: z.array(z.string()).length(3) })).length(2).optional(),
-    notes_for_maggie: z.string().optional(),
+    compliment: str('fit "hobby" only: one specific compliment. "" for a report.'),
+    photo_choice: z.number().int().describe("number of the photo candidate; 1 for a hobby answer"),
+    photo_focus: str('CSS background-position, like "50% 35%"'),
+    alt_photo_focus: str("second-choice photo_focus"),
+    layout: layout,
+    alt_layout: layout,
+    eyebrow: str('optional line above the headline, usually ""'),
+    headline: str("3 to 8 words"),
+    subline: str("one short line: what they shoot and where"),
+    button: str("a few words"),
+    first_section_changes: z.array(z.string()).describe("exactly 3 notes; [] for a hobby answer"),
+    fixes: z.array(z.object({ title: z.string(), noticed: z.string(), why: z.string(), changes: z.array(z.string()) }))
+      .describe("exactly 2 fixes, each with exactly 3 changes; [] for a hobby answer"),
+    notes_for_maggie: z.string(),
   });
 }
 type Wire = z.infer<ReturnType<typeof wireSchema>>;
 
-// Gemini picked a fit but left out fields that fit needs. The caller may retry once.
+// Gemini picked a fit but left out (or left empty) fields that fit needs. The caller may retry once.
 export class WrittenIncompleteError extends Error {
   constructor(public readonly fit: "report" | "hobby", public readonly missing: string[]) {
     super(`Gemini returned fit "${fit}" without: ${missing.join(", ")}`);
@@ -77,13 +79,26 @@ export class WrittenIncompleteError extends Error {
   }
 }
 
-export function toWritten(o: Wire): Written {
+const filled = (t: unknown) => typeof t === "string" && t.trim() !== "";
+
+export function toWritten(o: Partial<Wire> & { fit: Wire["fit"] }, photoCount = 3): Written {
   if (o.fit === "hobby") {
-    if (!o.compliment?.trim()) throw new WrittenIncompleteError("hobby", ["compliment"]);
-    return { fit: "hobby", compliment: o.compliment };
+    if (!filled(o.compliment)) throw new WrittenIncompleteError("hobby", ["compliment"]);
+    return { fit: "hobby", compliment: o.compliment! };
   }
-  const missing = REPORT_FIELDS.filter((k) => o[k] === undefined);
-  if (missing.length) throw new WrittenIncompleteError("report", [...missing]);
+  const missing: string[] = TEXT_FIELDS.filter((k) => !filled(o[k]));
+  const n = clampPhotos(photoCount);
+  if (!Number.isInteger(o.photo_choice) || o.photo_choice! < 1 || o.photo_choice! > n) missing.push("photo_choice");
+  if (!o.layout) missing.push("layout");
+  if (!o.alt_layout) missing.push("alt_layout");
+  if (o.eyebrow === undefined) missing.push("eyebrow");
+  const ch = o.first_section_changes;
+  if (!ch || ch.length !== 3 || !ch.every(filled)) missing.push("first_section_changes");
+  const fx = o.fixes;
+  if (!fx || fx.length !== 2 || !fx.every((f) => filled(f.title) && filled(f.noticed) && filled(f.why) && f.changes?.length === 3 && f.changes.every(filled))) {
+    missing.push("fixes");
+  }
+  if (missing.length) throw new WrittenIncompleteError("report", missing);
   const { compliment: _c, ...report } = o;
   void _c;
   return writtenSchema.parse(report);
@@ -93,7 +108,9 @@ export function toWritten(o: Wire): Written {
 // against maxOutputTokens. Google advises Gemini 3 at the default temperature, so none is set.
 // The same providerOptions.google shape works for the AI Gateway and for @ai-sdk/google
 // (per-call mediaResolution and thinkingConfig.thinkingLevel are in its option types).
-type ThinkingLevel = "low" | "minimal";
+// gemini-3.8-flash rejects "minimal" ("Thinking level MINIMAL is not supported for this model",
+// live 2026-11-03), so every call uses "low", the lowest level it accepts.
+type ThinkingLevel = "low";
 const providerOptions = (thinkingLevel: ThinkingLevel) => ({
   google: { mediaResolution: "MEDIA_RESOLUTION_LOW", thinkingConfig: { thinkingLevel } },
 });
@@ -191,7 +208,7 @@ export async function writeReport(input: {
       r = await withRateLimitRetry(() => generateObject({
         model: resolveModel(model),
         maxRetries: 0,
-        schema: wireSchema(photoCount),
+        schema: wireSchema(),
         system: SYSTEM_PROMPT,
         messages: [{
           role: "user",
@@ -209,7 +226,7 @@ export async function writeReport(input: {
     }
     const usage = usageOf(r, model);
     try {
-      return { written: toWritten(r.object), usage };
+      return { written: toWritten(r.object, photoCount), usage };
     } catch (e) {
       throw new AttemptError(e, usage);
     }
@@ -221,7 +238,7 @@ export async function writeReport(input: {
     // Truncated or incomplete output (thinking can eat the 2000-token cap): retry once with less thinking.
     if (!(e instanceof AttemptError)) throw e;
     try {
-      const second = await attempt("minimal");
+      const second = await attempt("low");
       return { written: second.written, usage: addUsage(e.usage, second.usage) };
     } catch (e2) {
       throw e2 instanceof AttemptError ? e2.cause : e2;
@@ -284,7 +301,7 @@ export async function repairFields(input: {
     system: REPAIR_SYSTEM,
     prompt: list,
     maxOutputTokens: 1500,
-    providerOptions: providerOptions("minimal"),
+    providerOptions: providerOptions("low"),
   }));
 
   const content = structuredClone(input.content);
@@ -318,7 +335,7 @@ export async function lookCheck(after: Buffer, model: ModelArg = DEFAULT_MODEL):
       ],
     }],
     maxOutputTokens: 1000,
-    providerOptions: providerOptions("minimal"),
+    providerOptions: providerOptions("low"),
   }));
   const o = r.object;
   return { ...o, ok: o.faces_ok && o.headline_readable && !o.looks_like_template, usage: usageOf(r, model) };
