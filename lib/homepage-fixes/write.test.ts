@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { MockLanguageModelV3 } from "ai/test";
 import { SYSTEM_PROMPT, userMessage } from "./prompt";
-import { addUsage, costOf, lookCheck, rateLimit, repairFields, writeReport, WrittenIncompleteError } from "./write";
+import { addUsage, costOf, lookCheck, rateLimit, repairFields, timeouts, writeReport, WrittenIncompleteError } from "./write";
 import { resolveModel } from "./model";
 import type { Facts } from "./facts";
 import type { ReportContent } from "./types";
@@ -247,6 +247,37 @@ describe("writeReport", () => {
     expect((err as WrittenIncompleteError).missing).toContain("notes_for_maggie");
     expect((err as WrittenIncompleteError).missing).not.toContain("headline");
     expect(m.doGenerateCalls).toHaveLength(2);
+  });
+
+  it("treats a bad photo_focus as incomplete and retries", async () => {
+    const m = mockSeq([{ text: JSON.stringify({ ...reportJson, photo_focus: "center top" }) }, { text: JSON.stringify({ ...reportJson, alt_photo_focus: "50% 140%" }) }]);
+    const err = await writeReport({ ...input, model: m }).catch((e) => e);
+    expect(err).toBeInstanceOf(WrittenIncompleteError);
+    expect((err as WrittenIncompleteError).missing).toEqual(["alt_photo_focus (not a position like 50% 35%)"]);
+    expect(m.doGenerateCalls).toHaveLength(2);
+  });
+
+  it("treats a looping 3,000-character subline as incomplete, then takes the retry", async () => {
+    const loop = { ...reportJson, subline: "together here with us now and forever ".repeat(80).slice(0, 3000) };
+    const m = mockSeq([{ text: JSON.stringify(loop) }, { text: JSON.stringify(reportJson) }]);
+    const { written, usage } = await writeReport({ ...input, model: m });
+    if (written.fit === "report") expect(written.subline).toBe(reportJson.subline);
+    expect(usage.calls).toBe(2);
+  });
+
+  it("leaves normal over-length to the rules check", async () => {
+    const long = { ...reportJson, subline: "x".repeat(150) }; // over 110, under 220
+    const { written } = await writeReport({ ...input, model: mock({ json: long }) });
+    if (written.fit === "report") expect(written.subline).toHaveLength(150);
+  });
+
+  it("caps the compliment and notes", async () => {
+    const m = mockSeq([{ text: JSON.stringify(hobbyJson("a".repeat(301))) }]);
+    const err = await writeReport({ ...input, model: m }).catch((e) => e);
+    expect((err as WrittenIncompleteError).missing).toEqual(["compliment (over 300 characters)"]);
+    const m2 = mockSeq([{ text: JSON.stringify({ ...reportJson, notes_for_maggie: "n".repeat(1501) }) }]);
+    const err2 = await writeReport({ ...input, model: m2 }).catch((e) => e);
+    expect((err2 as WrittenIncompleteError).missing).toEqual(["notes_for_maggie (over 1500 characters)"]);
   });
 
   it("treats a hobby answer without a compliment as incomplete", async () => {
@@ -514,5 +545,49 @@ describe("rate limits", () => {
     const { written, usage } = await writeReport({ firstName: "J", website: "j.com", goal: "", facts, photoCount: 1, contactSheet: Buffer.from([1]), model: m });
     expect(written.fit).toBe("hobby");
     expect(usage.calls).toBe(1);
+  });
+});
+
+describe("timeouts", () => {
+  const saved = timeouts.callMs;
+  afterEach(() => { timeouts.callMs = saved; });
+  const hang = () => ({ abortSignal }: { abortSignal?: AbortSignal }) =>
+    new Promise<never>((_, reject) => abortSignal?.addEventListener("abort", () => reject(abortSignal.reason)));
+
+  it("gives every call a 40 s abort signal", async () => {
+    expect(timeouts.callMs).toBe(40_000);
+    const m = mock({ json: reportJson });
+    await writeReport({ ...{ firstName: "J", website: "j.com", goal: "", facts, photoCount: 3, contactSheet: Buffer.from([1]) }, model: m });
+    expect(m.doGenerateCalls[0].abortSignal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("retries the main call once after a timeout", async () => {
+    timeouts.callMs = 20;
+    let i = 0;
+    const ok = mock({ json: reportJson });
+    const m = new MockLanguageModelV3({
+      modelId: MODEL,
+      doGenerate: async (opts) => (i++ === 0 ? hang()(opts) : ok.doGenerate(opts)),
+    });
+    const { written, usage } = await writeReport({ firstName: "J", website: "j.com", goal: "", facts, photoCount: 3, contactSheet: Buffer.from([1]), model: m });
+    expect(written.fit).toBe("report");
+    expect(i).toBe(2);
+    expect(usage.calls).toBe(1); // the aborted call reports no usage
+  });
+
+  it("does not retry a timed-out look check or repair", async () => {
+    timeouts.callMs = 20;
+    const sleep = vi.spyOn(rateLimit, "sleep").mockResolvedValue();
+    let calls = 0;
+    const m = new MockLanguageModelV3({ modelId: MODEL, doGenerate: async (opts) => { calls++; return hang()(opts); } });
+    await expect(lookCheck(Buffer.from([1]), m)).rejects.toThrow();
+    await expect(repairFields({ content: gabby, issues: [{ field: "fixes[1].why", level: "error", message: "x" }], model: m })).rejects.toThrow();
+    expect(calls).toBe(2);
+    expect(sleep).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+  });
+
+  it("caps the rate-limit wait at 20 s", () => {
+    expect(rateLimit.maxMs).toBe(20_000);
   });
 });

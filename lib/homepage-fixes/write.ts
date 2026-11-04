@@ -80,10 +80,18 @@ export class WrittenIncompleteError extends Error {
 }
 
 const filled = (t: unknown) => typeof t === "string" && t.trim() !== "";
+const MAX_COMPLIMENT = 300;
+const MAX_NOTES = 1500;
+// A CSS background-position in percentages, each 0 to 100.
+const validFocus = (t: string) => {
+  const m = t.trim().match(/^(\d{1,3})% (\d{1,3})%$/);
+  return !!m && Number(m[1]) <= 100 && Number(m[2]) <= 100;
+};
 
 export function toWritten(o: Partial<Wire> & { fit: Wire["fit"] }, photoCount = 3): Written {
   if (o.fit === "hobby") {
     if (!filled(o.compliment)) throw new WrittenIncompleteError("hobby", ["compliment"]);
+    if (o.compliment!.length > MAX_COMPLIMENT) throw new WrittenIncompleteError("hobby", [`compliment (over ${MAX_COMPLIMENT} characters)`]);
     return { fit: "hobby", compliment: o.compliment! };
   }
   const missing: string[] = TEXT_FIELDS.filter((k) => !filled(o[k]));
@@ -98,6 +106,24 @@ export function toWritten(o: Partial<Wire> & { fit: Wire["fit"] }, photoCount = 
   if (!fx || fx.length !== 2 || !fx.every((f) => filled(f.title) && filled(f.noticed) && filled(f.why) && f.changes?.length === 3 && f.changes.every(filled))) {
     missing.push("fixes");
   }
+  if (o.photo_focus && !validFocus(o.photo_focus)) missing.push("photo_focus (not a position like 50% 35%)");
+  if (o.alt_photo_focus && !validFocus(o.alt_photo_focus)) missing.push("alt_photo_focus (not a position like 50% 35%)");
+  // Normal over-length goes to the rules check and repair; past twice the limit it is a near-loop.
+  const tooLong = (label: string, t: string | undefined, max: number) => {
+    if (t && t.length > max) missing.push(`${label} (over ${max} characters)`);
+  };
+  tooLong("headline", o.headline, 2 * LIMITS.headline);
+  tooLong("subline", o.subline, 2 * LIMITS.subline);
+  tooLong("button", o.button, 2 * LIMITS.button);
+  tooLong("eyebrow", o.eyebrow, 2 * LIMITS.eyebrow);
+  tooLong("notes_for_maggie", o.notes_for_maggie, MAX_NOTES);
+  ch?.forEach((t, i) => tooLong(`first_section_changes[${i + 1}]`, t, 2 * LIMITS.changeNote));
+  fx?.forEach((f, i) => {
+    tooLong(`fixes[${i + 1}].title`, f.title, 2 * LIMITS.fixTitle);
+    tooLong(`fixes[${i + 1}].noticed`, f.noticed, 2 * LIMITS.noticed);
+    tooLong(`fixes[${i + 1}].why`, f.why, 2 * LIMITS.why);
+    f.changes?.forEach((t, j) => tooLong(`fixes[${i + 1}].changes[${j + 1}]`, t, 2 * LIMITS.fixChange));
+  });
   if (missing.length) throw new WrittenIncompleteError("report", missing);
   const { compliment: _c, ...report } = o;
   void _c;
@@ -155,7 +181,7 @@ function usageOf(
 
 // Free-tier rate limits answer 429 / RESOURCE_EXHAUSTED, and overload answers 503 / UNAVAILABLE
 // ("high demand"): wait the advised delay (or 5 s) and try once more; anything else is thrown for the pipeline's retry cron. The SDK's own retries are off.
-export const rateLimit = { sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), defaultMs: 5000, maxMs: 60000 };
+export const rateLimit = { sleep: (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), defaultMs: 5000, maxMs: 20000 };
 
 const TRANSIENT = /RESOURCE_EXHAUSTED|UNAVAILABLE/;
 
@@ -190,6 +216,11 @@ async function withRateLimitRetry<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+// Spec: Gemini calls 40 s each. A timeout is retried only by writeReport's single retry.
+export const timeouts = { callMs: 40_000 };
+const callSignal = () => AbortSignal.timeout(timeouts.callMs);
+const isTimeout = (e: unknown) => e instanceof Error && (e.name === "TimeoutError" || e.name === "AbortError");
+
 // A failed attempt still costs money: carry its usage so the retry can add it.
 class AttemptError extends Error {
   constructor(public readonly cause: unknown, public readonly usage: Usage) {
@@ -208,6 +239,7 @@ export async function writeReport(input: {
       r = await withRateLimitRetry(() => generateObject({
         model: resolveModel(model),
         maxRetries: 0,
+        abortSignal: callSignal(),
         schema: wireSchema(),
         system: SYSTEM_PROMPT,
         messages: [{
@@ -222,6 +254,7 @@ export async function writeReport(input: {
       }));
     } catch (e) {
       if (NoObjectGeneratedError.isInstance(e)) throw new AttemptError(e, usageOf({ usage: e.usage }, model));
+      if (isTimeout(e)) throw new AttemptError(e, { ...ZERO }); // usage unknown on an aborted call
       throw e;
     }
     const usage = usageOf(r, model);
@@ -235,7 +268,7 @@ export async function writeReport(input: {
   try {
     return await attempt("low");
   } catch (e) {
-    // Truncated or incomplete output (thinking can eat the 2000-token cap): retry once with less thinking.
+    // Truncated, looping, incomplete or timed-out output: retry once (still "low", the model's lowest level).
     if (!(e instanceof AttemptError)) throw e;
     try {
       const second = await attempt("low");
@@ -297,6 +330,7 @@ export async function repairFields(input: {
   const r = await withRateLimitRetry(() => generateObject({
     model: resolveModel(model),
     maxRetries: 0,
+    abortSignal: callSignal(),
     schema: repairSchema,
     system: REPAIR_SYSTEM,
     prompt: list,
@@ -326,6 +360,7 @@ export async function lookCheck(after: Buffer, model: ModelArg = DEFAULT_MODEL):
   const r = await withRateLimitRetry(() => generateObject({
     model: resolveModel(model),
     maxRetries: 0,
+    abortSignal: callSignal(),
     schema: lookSchema,
     messages: [{
       role: "user",
