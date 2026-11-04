@@ -1,5 +1,5 @@
 import type { NextRequest } from "next/server";
-import { bearerAllowed, json, notFound } from "@/lib/homepage-fixes/admin-data";
+import { json, withLeadsToken } from "@/lib/homepage-fixes/admin-data";
 import { getLiveModel, saveModel } from "@/lib/guide-store";
 import { MODEL_OPTIONS, pickModel } from "@/lib/models";
 
@@ -11,18 +11,16 @@ export const dynamic = "force-dynamic";
 
 const options = () => MODEL_OPTIONS.map(({ id, label, description }) => ({ id, label, description }));
 
-export async function GET(req: NextRequest) {
-  if (!bearerAllowed(req, "LEADS_API_TOKEN")) return notFound();
+export const GET = withLeadsToken(async () => {
   try {
     return json({ model: pickModel(await getLiveModel(), process.env.LLM_MODEL), options: options() });
   } catch (e) {
     console.error("admin model read failed:", (e as Error).message);
     return json({ error: "unavailable" }, 500);
   }
-}
+});
 
-export async function POST(req: NextRequest) {
-  if (!bearerAllowed(req, "LEADS_API_TOKEN")) return notFound();
+export const POST = withLeadsToken(async (req: NextRequest) => {
   const body = (await req.json().catch(() => null)) as { model?: unknown } | null;
   const model = typeof body?.model === "string" ? body.model : "";
   if (!MODEL_OPTIONS.some((m) => m.id === model)) return json({ error: "unknown model" }, 400);
@@ -33,4 +31,4 @@ export async function POST(req: NextRequest) {
     console.error("admin model save failed:", (e as Error).message);
     return json({ error: "unavailable" }, 500);
   }
-}
+});

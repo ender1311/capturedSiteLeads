@@ -60,7 +60,7 @@ describe("homepage-fixes emails", () => {
 
   it("reportEmail has the exact subject, button and body", () => {
     const e = reportEmail("Jane", PDF, true);
-    expect(e.subject).toBe("Jane, your homepage fixes are ready");
+    expect(e.subject).toBe("Jane, your top homepage fixes are ready");
     expect(e.html).toContain(`href="${PDF}"`);
     expect(e.html).toContain("See My Homepage Fixes");
     expect(e.text).toContain("Hi Jane,");
@@ -117,7 +117,7 @@ describe("homepage-fixes emails", () => {
   });
 
   it("subjects escape nothing and HTML escapes names", () => {
-    expect(reportEmail("D'Andre", PDF, true).subject).toBe("D'Andre, your homepage fixes are ready");
+    expect(reportEmail("D'Andre", PDF, true).subject).toBe("D'Andre, your top homepage fixes are ready");
     expect(cantSeeEmail("D'Andre", "not_live").subject).toBe("D'Andre, a quick note about your homepage fixes");
     expect(hobbyEmail("D'Andre", COMPLIMENT).subject).toBe("D'Andre, a little note about your website");
     const evil = "<script>alert(1)</script>";
@@ -131,7 +131,7 @@ describe("homepage-fixes emails", () => {
     expect(reportEmail("Jane\r\nBcc: x@y.com", PDF, true).subject).not.toMatch(/[\r\n]/);
   });
 
-  it("alertEmail lists the lead and links the dashboard", () => {
+  it("alertEmail lists the lead and links straight to it in the Beacon Frontier admin", () => {
     const e = alertEmail("held", { id: "lead-1", name: "Jane", email: "jane@x.com", site_url: "https://janedoe.com", error: "look check failed" });
     expect(e.subject).toBe("[Homepage Fixes] held: Jane (https://janedoe.com)");
     for (const s of [e.text, e.html]) {
@@ -139,8 +139,9 @@ describe("homepage-fixes emails", () => {
       expect(s).toContain("jane@x.com");
       expect(s).toContain("https://janedoe.com");
       expect(s).toContain("look check failed");
-      expect(s).toContain("https://captured-site-leads.vercel.app/dashboard");
+      expect(s).toContain("https://beaconfrontier.com/admin/site/capturedsites/leads/lead-1");
     }
+    expect(alertEmail("failed", { id: "../x", name: "J", email: "j@x", site_url: "s" }).text).toContain("Open the lead: https://beaconfrontier.com/admin/site/capturedsites\n");
     expect(alertEmail("cap", { id: "1", name: "<b>", email: "a@b.c", site_url: "s" }).html).not.toContain("<b>");
   });
 });

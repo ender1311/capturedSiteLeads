@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import {
-  OUTCOME_FILTERS, bearerAllowed, fetchLeadsCsv, fetchLeadsPage, fetchSummary, json, notFound, parseRange,
+  OUTCOME_FILTERS, fetchLeadsCsv, fetchLeadsPage, fetchSummary, json, parseRange, withLeadsToken,
 } from "@/lib/homepage-fixes/admin-data";
 
 // Leads for the Beacon Frontier admin (Bearer LEADS_API_TOKEN):
@@ -14,8 +14,7 @@ export const dynamic = "force-dynamic";
 
 const DAY_MS = 86_400_000;
 
-export async function GET(req: NextRequest) {
-  if (!bearerAllowed(req, "LEADS_API_TOKEN")) return notFound();
+export const GET = withLeadsToken(async (req: NextRequest) => {
   const p = req.nextUrl.searchParams;
   const range = parseRange(p.get("from"), p.get("to"), { required: false });
   if ("error" in range) return json({ error: range.error }, 400);
@@ -47,4 +46,4 @@ export async function GET(req: NextRequest) {
     console.error("admin leads failed:", (e as Error).message);
     return json({ error: "unavailable" }, 500);
   }
-}
+});

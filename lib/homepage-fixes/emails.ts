@@ -5,7 +5,10 @@
 
 export const TOUR_URL =
   "https://capturedsites.com/tour/?utm_source=homepage-fixes&utm_medium=email&utm_campaign=homepage-fixes";
-export const DASHBOARD_URL = "https://captured-site-leads.vercel.app/dashboard";
+// The leads live in the Beacon Frontier admin; an alert links straight to its lead.
+export const ADMIN_URL = "https://beaconfrontier.com/admin/site/capturedsites";
+export const adminLeadUrl = (id: string) =>
+  /^[A-Za-z0-9_-]{1,64}$/.test(id) ? `${ADMIN_URL}/leads/${id}` : ADMIN_URL;
 
 export type Email = { subject: string; html: string; text: string };
 
@@ -66,7 +69,7 @@ export function reportEmail(name: string, pdfUrl: string, attached: boolean): Em
     { tour: "report" },
     { signoff: true },
   ];
-  return { subject: subjectLine(`${name}, your homepage fixes are ready`), ...shell(blocks) };
+  return { subject: subjectLine(`${name}, your top homepage fixes are ready`), ...shell(blocks) };
 }
 
 export type CantSeeReason = "not_live" | "too_little" | "couldnt_load";
@@ -101,6 +104,7 @@ export function alertEmail(
   kind: "held" | "failed" | "cap",
   lead: { id: string; name: string; email: string; site_url: string; error?: string },
 ): Email {
+  const link = adminLeadUrl(lead.id);
   const rows: [string, string][] = [
     ["Lead id", lead.id],
     ["Name", lead.name],
@@ -113,8 +117,8 @@ export function alertEmail(
 <table role="presentation" cellpadding="4" cellspacing="0" style="border-collapse:collapse">
 ${rows.map(([k, v]) => `<tr><td style="font-weight:bold;vertical-align:top;padding-right:12px">${esc(k)}</td><td style="white-space:pre-wrap">${esc(v)}</td></tr>`).join("\n")}
 </table>
-<p style="margin:16px 0 0"><a href="${esc(DASHBOARD_URL)}" style="color:#143133">${esc(DASHBOARD_URL)}</a></p>
+<p style="margin:16px 0 0"><a href="${esc(link)}" style="color:#143133">${esc(link)}</a></p>
 </body></html>`;
-  const text = `Homepage Fixes: ${kind}\n\n${rows.map(([k, v]) => `${k}: ${v}`).join("\n")}\n\nDashboard: ${DASHBOARD_URL}\n`;
+  const text = `Homepage Fixes: ${kind}\n\n${rows.map(([k, v]) => `${k}: ${v}`).join("\n")}\n\nOpen the lead: ${link}\n`;
   return { subject: subjectLine(`[Homepage Fixes] ${kind}: ${lead.name} (${lead.site_url})`), html, text };
 }

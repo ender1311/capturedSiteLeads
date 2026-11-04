@@ -20,11 +20,13 @@ import { DeliveredNotRecordedError, deliver, deliverFailed, resendReport, sendAl
 type Call = { url: string; method: string; body: Record<string, unknown> | null };
 let calls: Call[] = [];
 let resendStatus = 200;
+let resendBody: unknown = { id: "email-1" };
 let mailerliteStatus = 200;
 
 beforeEach(() => {
   calls = [];
   resendStatus = 200;
+  resendBody = { id: "email-1" };
   mailerliteStatus = 200;
   h.query.mockClear();
   h.put.mockClear();
@@ -39,7 +41,7 @@ beforeEach(() => {
     const url = String(input);
     calls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : null });
     if (url.startsWith("https://api.resend.com")) {
-      return new Response(JSON.stringify(resendStatus === 200 ? { id: "email-1" } : { message: "boom" }), { status: resendStatus });
+      return new Response(typeof resendBody === "string" && resendStatus === 200 ? resendBody : JSON.stringify(resendStatus === 200 ? resendBody : { message: "boom" }), { status: resendStatus });
     }
     if (url.startsWith("https://blob.test/")) {
       return url.includes("missing") ? new Response("gone", { status: 404 }) : new Response(new Uint8Array(Buffer.from("%PDF old")));
@@ -108,7 +110,7 @@ describe("deliver", () => {
     expect(resend()).toHaveLength(1);
     expect(email.body!.from).toBe("Maggie | Captured Sites <maggie@capturedsites.com>");
     expect(email.body!.to).toEqual(["jane@example.com"]);
-    expect(email.body!.subject).toBe("Jane, your homepage fixes are ready");
+    expect(email.body!.subject).toBe("Jane, your top homepage fixes are ready");
     expect(email.body!.attachments).toEqual([
       { filename: "your-top-homepage-fixes-jane.pdf", content: r.outcome === "sent" ? r.pdf.toString("base64") : "" },
     ]);
@@ -151,7 +153,7 @@ describe("deliver", () => {
     expect(resend()).toHaveLength(1);
     const [campaign] = ml("/campaigns");
     const emails = campaign.body!.emails as { subject: string; content: string; from: string }[];
-    expect(emails[0].subject).toBe("Jane, your homepage fixes are ready");
+    expect(emails[0].subject).toBe("Jane, your top homepage fixes are ready");
     expect(emails[0].content).toContain("See My Homepage Fixes");
     expect(emails[0].content).not.toContain("attached to this email");
     expect(emails[0].content).toContain("{$unsubscribe}");
@@ -284,6 +286,44 @@ describe("deliver", () => {
   });
 });
 
+describe("Resend email ids on the row", () => {
+  it("sent, hobby, can't see and failed rows keep the id of the email they sent", async () => {
+    await deliver("lead-1", LEAD, sent());
+    expect(lastUpdate()).toMatchObject({ outcome: "sent", resend_email_id: "email-1" });
+    resendBody = { id: "email-2" };
+    await deliver("lead-2", LEAD, { outcome: "hobby", compliment: "Lovely work.", facts: FACTS, usage: USAGE, model: "m" });
+    expect(lastUpdate()).toMatchObject({ outcome: "hobby", resend_email_id: "email-2" });
+    resendBody = { id: "email-3" };
+    await deliver("lead-3", LEAD, { outcome: "cant_see", reason: "COMING_SOON", facts: FACTS, usage: USAGE, model: "" } as PipelineResult);
+    expect(lastUpdate()).toMatchObject({ outcome: "cant_see", resend_email_id: "email-3" });
+    resendBody = { id: "email-4" };
+    await deliverFailed("lead-4", LEAD, "boom");
+    expect(lastUpdate()).toMatchObject({ outcome: "failed", resend_email_id: "email-4" });
+  });
+
+  it("re-sends return the id for the caller to record", async () => {
+    resendBody = { id: "email-9" };
+    expect(await resendReport(LEAD, "https://blob.test/p.pdf")).toBe("email-9");
+  });
+
+  it("no id from Resend (or a body that isn't JSON) still delivers, without the column", async () => {
+    resendBody = {};
+    await deliver("lead-1", LEAD, sent());
+    expect(lastUpdate()).toMatchObject({ outcome: "sent" });
+    expect(lastUpdate()).not.toHaveProperty("resend_email_id");
+    resendBody = "not json";
+    await deliver("lead-2", LEAD, sent());
+    expect(lastUpdate()).not.toHaveProperty("resend_email_id");
+    expect(await resendReport(LEAD, "https://blob.test/p.pdf")).toBeNull();
+  });
+
+  it("the MailerLite fallback records no id", async () => {
+    resendStatus = 500;
+    await deliver("lead-1", LEAD, sent());
+    expect(lastUpdate()).not.toHaveProperty("resend_email_id");
+  });
+});
+
 describe("sendAlert", () => {
   it("sends failed alerts to ALERT_EMAILS only, and never throws", async () => {
     vi.stubEnv("ALERT_EMAILS", "a@x.com, b@x.com");
@@ -304,7 +344,7 @@ describe("first-name greetings", () => {
     await deliverFailed("lead-3", JANE_DOE, "boom");
     const toJane = resend().filter((c) => (c.body!.to as string[]).includes("jane@example.com"));
     expect(toJane.map((m) => m.body!.subject)).toEqual([
-      "Jane, your homepage fixes are ready",
+      "Jane, your top homepage fixes are ready",
       "Jane, a quick note about your homepage fixes",
       "Jane, a quick note about your homepage fixes",
     ]);
@@ -324,7 +364,7 @@ describe("resendReport", () => {
     await resendReport({ ...LEAD, name: "Jane Doe" }, "https://blob.test/homepage-fixes/x/your-top-homepage-fixes-jane.pdf");
     const [mail] = resend();
     expect(mail.body!.to).toEqual(["jane@example.com"]);
-    expect(mail.body!.subject).toBe("Jane, your homepage fixes are ready");
+    expect(mail.body!.subject).toBe("Jane, your top homepage fixes are ready");
     expect(String(mail.body!.text)).toMatch(/^Hi Jane,/);
     expect(String(mail.body!.html)).toContain("attached to this email");
     expect(mail.body!.attachments).toEqual([

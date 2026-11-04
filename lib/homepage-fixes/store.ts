@@ -45,13 +45,13 @@ export async function insertHfLead(i: {
 export type HfPatch = Partial<{
   outcome: HfOutcome; error: string; pdf_url: string; before_url: string; after_url: string;
   content: unknown; input_tokens: number; output_tokens: number; cost_usd: number; model: string;
-  retry_count: number;
+  retry_count: number; resend_email_id: string;
 }>;
 
 // Column names can't be parameters, so only these are ever written into the statement.
 const COLUMNS = [
   "outcome", "error", "pdf_url", "before_url", "after_url", "content",
-  "input_tokens", "output_tokens", "cost_usd", "model", "retry_count",
+  "input_tokens", "output_tokens", "cost_usd", "model", "retry_count", "resend_email_id",
 ] as const;
 
 export async function updateHfLead(id: string, patch: HfPatch): Promise<void> {

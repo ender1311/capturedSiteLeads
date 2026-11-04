@@ -501,7 +501,7 @@ describe("processLead", () => {
     h.runHomepageFixes.mockRejectedValueOnce(new Error("boom"));
     await processLead(id);
     const [report] = toPhotographer("jane@example.com");
-    expect(report.body!.subject).toBe("Jane, your homepage fixes are ready");
+    expect(report.body!.subject).toBe("Jane, your top homepage fixes are ready");
     expect(String(report.body!.text)).toMatch(/^Hi Jane,/);
     const [failed] = toPhotographer("jd@example.com");
     expect(failed.body!.subject).toBe("Jane, a quick note about your homepage fixes");

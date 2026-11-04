@@ -68,3 +68,32 @@ export async function incrementEngagement(
     `;
   }
 }
+
+// Credits the row whose email Resend reports on by its Resend email id (stored when the
+// homepage-fixes email went out). True when a row matched.
+async function incrementByEmailId(emailId: string, counter: "opens" | "clicks"): Promise<boolean> {
+  const q = sql();
+  const rows = (counter === "opens"
+    ? await q`update leads set opens = opens + 1 where resend_email_id = ${emailId} returning id`
+    : await q`update leads set clicks = clicks + 1 where resend_email_id = ${emailId} returning id`) as { id: string }[];
+  return rows.length > 0;
+}
+
+/**
+ * The Resend webhook's open/click: the row that sent that exact email (by Resend's email id)
+ * when there is one, else the newest delivered row for the address (older emails, roadmap rows,
+ * the MailerLite fallback). A failed id lookup falls back to the address too.
+ */
+export async function recordEngagement(
+  event: { emailId: string | null; email: string | null },
+  counter: "opens" | "clicks"
+): Promise<void> {
+  if (event.emailId) {
+    try {
+      if (await incrementByEmailId(event.emailId, counter)) return;
+    } catch (e) {
+      console.warn("Engagement by email id failed; matching by address:", (e as Error).message);
+    }
+  }
+  if (event.email) await incrementEngagement(event.email, counter);
+}

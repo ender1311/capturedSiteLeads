@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { secretMatches } from "@/lib/abuse";
 import { sql } from "@/lib/db";
 import { reportEmail } from "./emails";
@@ -26,22 +26,39 @@ const FINISHED = ["sent", "hobby", "cant_see", "held", "failed"];
 // ---------- responses and auth ----------
 
 const NO_STORE = { "Cache-Control": "no-store" };
+/** The metrics contract's headers: never cached anywhere, never indexed. */
+export const METRICS_HEADERS = { "Cache-Control": "private, no-store", "X-Robots-Tag": "noindex" };
 
-export function json(body: unknown, status = 200): NextResponse {
-  return NextResponse.json(body, { status, headers: NO_STORE });
+export function json(body: unknown, status = 200, headers: Record<string, string> = NO_STORE): NextResponse {
+  return NextResponse.json(body, { status, headers });
 }
 
 /** The same empty 404 for a missing token, a wrong one, and no token configured (fail closed). */
-export function notFound(): NextResponse {
-  return new NextResponse(null, { status: 404, headers: NO_STORE });
+export function notFound(headers: Record<string, string> = NO_STORE): NextResponse {
+  return new NextResponse(null, { status: 404, headers });
 }
 
+type TokenEnv = "PRODUCT_TOKEN_CAPTUREDSITES" | "LEADS_API_TOKEN";
+
 /** True only when `envName` is set and the request carries exactly `Bearer <that value>`. */
-export function bearerAllowed(req: Request, envName: "PRODUCT_TOKEN_CAPTUREDSITES" | "LEADS_API_TOKEN"): boolean {
+export function bearerAllowed(req: Request, envName: TokenEnv): boolean {
   const token = process.env[envName]?.trim();
   if (!token) return false;
   return secretMatches(req.headers.get("authorization"), `Bearer ${token}`);
 }
+
+/**
+ * Wraps a route handler so it runs only with the right bearer token; anything else is the empty
+ * 404. proxy.ts lets every /api/admin/* request through, so every handler there must use this.
+ */
+export function withToken<A extends unknown[]>(
+  envName: TokenEnv, handler: (req: NextRequest, ...args: A) => Promise<Response>, headers: Record<string, string> = NO_STORE,
+): (req: NextRequest, ...args: A) => Promise<Response> {
+  return async (req, ...args) => (bearerAllowed(req, envName) ? handler(req, ...args) : notFound(headers));
+}
+
+export const withLeadsToken = <A extends unknown[]>(handler: (req: NextRequest, ...args: A) => Promise<Response>) =>
+  withToken("LEADS_API_TOKEN", handler);
 
 // ---------- dates ----------
 
@@ -83,7 +100,9 @@ export function parseRange(
   if ((f && !validDay(f)) || (t && !validDay(t))) return { error: "from and to must be YYYY-MM-DD" };
   if (f && t) {
     if (t < f) return { error: "to is before from" };
-    if (daysBetween(f, t).length > MAX_RANGE_DAYS) return { error: `at most ${MAX_RANGE_DAYS} days` };
+    // Counted arithmetically: the list of days is only built once the range is known to be small.
+    const days = (Date.parse(`${t}T00:00:00Z`) - Date.parse(`${f}T00:00:00Z`)) / DAY_MS + 1;
+    if (days > MAX_RANGE_DAYS) return { error: `at most ${MAX_RANGE_DAYS} days` };
   }
   return { from: f, to: t };
 }

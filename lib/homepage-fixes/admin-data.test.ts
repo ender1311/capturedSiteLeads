@@ -33,6 +33,9 @@ describe("daysBetween / parseRange", () => {
     expect(parseRange("2026-11-31", "2026-12-01", { required: true })).toHaveProperty("error");
     expect(parseRange("2026-11-03", "2026-11-01", { required: true })).toHaveProperty("error");
     expect(parseRange("2025-01-01", "2026-11-01", { required: true })).toHaveProperty("error");
+    expect(parseRange("0001-01-01", "9999-12-31", { required: true })).toHaveProperty("error");
+    expect(parseRange("2025-10-01", "2026-11-04", { required: true })).toEqual({ from: "2025-10-01", to: "2026-11-04" }); // 400 days
+    expect(parseRange("2025-09-30", "2026-11-04", { required: true })).toHaveProperty("error"); // 401
     expect(parseRange(null, null, { required: true })).toHaveProperty("error");
     expect(parseRange(null, null, { required: false })).toEqual({ from: null, to: null });
     expect(parseRange("nope", null, { required: false })).toHaveProperty("error");
@@ -218,7 +221,7 @@ describe("emailFields", () => {
 describe("emailSetupBody", () => {
   it("the real report email for Jane, the group and automation, zero-filled 30-day outcomes and fractional rates", () => {
     const b = emailSetupBody(null, [row("2026-11-01", "sent", { opens: 1 }), row("2026-11-01", "sent"), row("2026-11-02", "held")]);
-    expect(b.reportEmail.subject).toBe("Jane, your homepage fixes are ready");
+    expect(b.reportEmail.subject).toBe("Jane, your top homepage fixes are ready");
     expect(b.reportEmail.html).toContain("Hi Jane,");
     expect(b.reportEmail.html).toContain("See My Homepage Fixes");
     expect(b).toMatchObject({ group: "Website Lead Generator", automation: "Lead Generator Follow-ups", open_rate30d: 0.5, click_rate30d: 0 });

@@ -4,8 +4,8 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "Captured Sites Leads",
     short_name: "Captured",
-    description: "Lead intake, roadmap PDFs, and email engagement for Captured Sites.",
-    start_url: "/dashboard",
+    description: "Homepage Fixes lead intake, reports and email delivery for Captured Sites.",
+    start_url: "/",
     scope: "/",
     display: "standalone",
     background_color: "#143133",

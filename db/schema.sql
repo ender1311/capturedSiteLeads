@@ -51,6 +51,10 @@ alter table leads add column if not exists retry_count int not null default 0;
 alter table leads add column if not exists processing_started_at timestamptz;
 alter table leads add column if not exists stuck_alerted_at timestamptz;
 create index if not exists leads_type_created_idx on leads (report_type, created_at desc);
+-- The Resend id of the email this row sent (report, hobby, can't see, re-send), so the Resend
+-- webhook credits opens and clicks to exactly this row; null after the MailerLite fallback.
+alter table leads add column if not exists resend_email_id text;
+create index if not exists leads_resend_email_id_idx on leads (resend_email_id);
 create table if not exists scrape_cache (domain text primary key, data jsonb not null, created_at timestamptz not null default now());
 create table if not exists check_hits (ip text not null, at timestamptz not null default now());
 create index if not exists check_hits_ip_at_idx on check_hits (ip, at);

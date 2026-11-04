@@ -56,7 +56,8 @@ export function cantSeeReason(reason: string): CantSeeReason {
   return "couldnt_load"; // unreachable, bot_check, empty, and failed reports
 }
 
-async function resendSend(to: string[], e: Email, attachments?: Attachment[]): Promise<void> {
+/** Sends through Resend; the email's Resend id (for open/click attribution), or null if none came back. */
+async function resendSend(to: string[], e: Email, attachments?: Attachment[]): Promise<string | null> {
   if (!process.env.RESEND_API_KEY) throw new Error("RESEND_API_KEY is not set");
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -71,20 +72,33 @@ async function resendSend(to: string[], e: Email, attachments?: Attachment[]): P
     }),
   });
   if (!res.ok) throw new Error(`Resend send failed (${res.status}): ${await res.text()}`);
+  try {
+    const body = (await res.json()) as { id?: unknown };
+    return typeof body?.id === "string" && body.id ? body.id : null;
+  } catch {
+    return null;
+  }
 }
 
-/** Resend first; on any Resend error, MailerLite's link-only campaign with `fallback` copy. */
+/**
+ * Resend first; on any Resend error, MailerLite's link-only campaign with `fallback` copy.
+ * Returns Resend's email id (null after the MailerLite fallback, or if Resend gave none).
+ */
 async function sendToPhotographer(
   lead: DeliverLead, e: Email, opts: { pdfUrl?: string; attachment?: Attachment; fallback?: Email } = {},
-): Promise<void> {
+): Promise<string | null> {
   try {
-    await resendSend([lead.email], e, opts.attachment ? [opts.attachment] : undefined);
+    return await resendSend([lead.email], e, opts.attachment ? [opts.attachment] : undefined);
   } catch (err) {
     console.warn("Resend send failed; falling back to MailerLite:", (err as Error).message);
     const f = opts.fallback ?? e;
     await sendPdfEmail({ name: lead.name, email: lead.email, pdfUrl: opts.pdfUrl ?? "", subject: f.subject, html: f.html });
+    return null;
   }
 }
+
+// The row keeps the Resend id of the email it sent, so the webhook credits opens to this row.
+const emailIdCol = (id: string | null) => (id ? { resend_email_id: id } : {});
 
 async function upsertSubscriber(lead: DeliverLead, outcome: HfOutcome, extra: {
   pdfUrl?: string; headline?: string; fix1?: string; fix2?: string;
@@ -125,7 +139,7 @@ export async function deliver(leadId: string, lead: DeliverLead, result: Pipelin
         put(`${folder}/after.jpg`, result.after, { access: "public", contentType: "image/jpeg" }),
       ]);
       const attach = result.pdf.length <= MAX_ATTACHMENT_BYTES;
-      await sendToPhotographer(lead, reportEmail(greet(lead), pdf.url, attach), {
+      const emailId = await sendToPhotographer(lead, reportEmail(greet(lead), pdf.url, attach), {
         pdfUrl: pdf.url,
         attachment: attach ? { filename: fileName, content: result.pdf.toString("base64") } : undefined,
         fallback: reportEmail(greet(lead), pdf.url, false),
@@ -140,27 +154,27 @@ export async function deliver(leadId: string, lead: DeliverLead, result: Pipelin
         await updateHfLead(leadId, {
           outcome: "sent", pdf_url: pdf.url, before_url: before.url, after_url: after.url,
           content: { ...result.content, fact_sheet: result.facts.sheet },
-          ...usageCols(result), model: result.model,
+          ...usageCols(result), model: result.model, ...emailIdCol(emailId),
         });
       });
       return;
     }
     case "hobby": {
-      await sendToPhotographer(lead, hobbyEmail(greet(lead), result.compliment));
+      const emailId = await sendToPhotographer(lead, hobbyEmail(greet(lead), result.compliment));
       await afterSend(leadId, lead, async () => {
         await upsertSubscriber(lead, "hobby");
         await updateHfLead(leadId, {
           outcome: "hobby", content: { compliment: result.compliment, fact_sheet: result.facts.sheet },
-          ...usageCols(result), model: result.model,
+          ...usageCols(result), model: result.model, ...emailIdCol(emailId),
         });
       });
       return;
     }
     case "cant_see": {
-      await sendToPhotographer(lead, cantSeeEmail(greet(lead), cantSeeReason(result.reason)));
+      const emailId = await sendToPhotographer(lead, cantSeeEmail(greet(lead), cantSeeReason(result.reason)));
       await afterSend(leadId, lead, async () => {
         await upsertSubscriber(lead, "cant_see");
-        await updateHfLead(leadId, { outcome: "cant_see", content: { reason: result.reason }, ...usageCols(result) });
+        await updateHfLead(leadId, { outcome: "cant_see", content: { reason: result.reason }, ...usageCols(result), ...emailIdCol(emailId) });
       });
       return;
     }
@@ -184,9 +198,10 @@ export async function deliver(leadId: string, lead: DeliverLead, result: Pipelin
 /**
  * Re-sends a report the photographer already has (a repeat request, or one over the daily limit):
  * the same report email, the PDF attached when it downloads and fits, MailerLite link-only only
- * if Resend errors. Records nothing; the caller owns the row. Throws only if no email went out.
+ * if Resend errors. Records nothing; the caller owns the row (and gets Resend's email id, or
+ * null, to record). Throws only if no email went out.
  */
-export async function resendReport(lead: DeliverLead, pdfUrl: string): Promise<void> {
+export async function resendReport(lead: DeliverLead, pdfUrl: string): Promise<string | null> {
   let attachment: Attachment | undefined;
   try {
     const res = await fetch(pdfUrl);
@@ -199,7 +214,7 @@ export async function resendReport(lead: DeliverLead, pdfUrl: string): Promise<v
   } catch (err) {
     console.warn("Could not fetch the earlier PDF to attach; sending the link only:", (err as Error).message);
   }
-  await sendToPhotographer(lead, reportEmail(greet(lead), pdfUrl, !!attachment), {
+  return sendToPhotographer(lead, reportEmail(greet(lead), pdfUrl, !!attachment), {
     pdfUrl, attachment, fallback: reportEmail(greet(lead), pdfUrl, false),
   });
 }
@@ -211,8 +226,9 @@ export async function resendReport(lead: DeliverLead, pdfUrl: string): Promise<v
  */
 export async function deliverFailed(leadId: string, lead: DeliverLead, error: string): Promise<void> {
   const alertLead = { id: leadId, name: lead.name, email: lead.email, site_url: lead.siteUrl };
+  let emailId: string | null;
   try {
-    await sendToPhotographer(lead, cantSeeEmail(greet(lead), "couldnt_load"));
+    emailId = await sendToPhotographer(lead, cantSeeEmail(greet(lead), "couldnt_load"));
   } catch (err) {
     const message = `${error}\nthe can't-see email also failed: ${err instanceof Error ? err.message : String(err)}`;
     await updateHfLead(leadId, { outcome: "failed", error: message });
@@ -221,7 +237,7 @@ export async function deliverFailed(leadId: string, lead: DeliverLead, error: st
   }
   await afterSend(leadId, lead, async () => {
     await upsertSubscriber(lead, "failed");
-    await updateHfLead(leadId, { outcome: "failed", error });
+    await updateHfLead(leadId, { outcome: "failed", error, ...emailIdCol(emailId) });
   });
   await sendAlert("failed", { ...alertLead, error });
 }

@@ -43,7 +43,8 @@ describe("GET /api/metrics/v1", () => {
   it("answers the v1 contract, zero-filled, aggregates only", async () => {
     const res = await GET(req("?from=2026-11-01&to=2026-11-03&granularity=day"));
     expect(res.status).toBe(200);
-    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("cache-control")).toBe("private, no-store");
+    expect(res.headers.get("x-robots-tag")).toBe("noindex");
     const body = await res.json();
     expect(body).toMatchObject({ version: 1, app: "capturedsites", range: { from: "2026-11-01", to: "2026-11-03", granularity: "day" } });
     expect(body.series.map((s: { date: string }) => s.date)).toEqual(["2026-11-01", "2026-11-02", "2026-11-03"]);
@@ -64,7 +65,8 @@ describe("GET /api/metrics/v1", () => {
       const res = await GET(r);
       expect(res.status).toBe(404);
       expect(await res.text()).toBe("");
-      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("cache-control")).toBe("private, no-store");
+      expect(res.headers.get("x-robots-tag")).toBe("noindex");
     }
     vi.stubEnv("PRODUCT_TOKEN_CAPTUREDSITES", "");
     expect((await GET(req("?from=2026-11-01&to=2026-11-03"))).status).toBe(404);
@@ -75,7 +77,7 @@ describe("GET /api/metrics/v1", () => {
     for (const q of ["", "?from=2026-11-03&to=2026-11-01", "?from=2026-11-01&to=2026-11-03&granularity=week", "?from=x&to=2026-11-01"]) {
       const res = await GET(req(q));
       expect(res.status).toBe(400);
-      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(res.headers.get("cache-control")).toBe("private, no-store");
     }
   });
 });

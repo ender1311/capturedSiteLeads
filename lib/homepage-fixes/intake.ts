@@ -194,8 +194,9 @@ async function triage(
 
 /** Re-sends an earlier PDF; for a dedupe the row becomes `sent` with that PDF once it's out. */
 async function resendEarlier(id: string, lead: DeliverLead, pdfUrl: string, outcome: "sent" | "limited"): Promise<void> {
+  let emailId: string | null;
   try {
-    await resendReport(lead, pdfUrl);
+    emailId = await resendReport(lead, pdfUrl);
   } catch (e) {
     const error = `re-sending the earlier report failed: ${errText(e)}`;
     console.error(`Homepage fixes lead ${id}: ${error}`);
@@ -203,8 +204,10 @@ async function resendEarlier(id: string, lead: DeliverLead, pdfUrl: string, outc
     await sendAlert("failed", { id, name: lead.name, email: lead.email, site_url: lead.siteUrl, error });
     return;
   }
-  if (outcome === "sent") {
-    await updateHfLead(id, { outcome: "sent", pdf_url: pdfUrl }).catch((e) => {
+  // The row keeps the Resend id of the re-send, so its opens and clicks land here.
+  const idCol = emailId ? { resend_email_id: emailId } : {};
+  if (outcome === "sent" || emailId) {
+    await updateHfLead(id, outcome === "sent" ? { outcome: "sent", pdf_url: pdfUrl, ...idCol } : idCol).catch((e) => {
       console.error(`Homepage fixes lead ${id}: re-sent but not recorded: ${errText(e)}`);
     });
   }

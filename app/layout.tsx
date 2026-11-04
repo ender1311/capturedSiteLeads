@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Captured Sites Leads",
-  description: "Lead intake, roadmap PDFs, and email engagement for Captured Sites.",
+  description: "Homepage Fixes lead intake, reports and email delivery for Captured Sites.",
   appleWebApp: {
     capable: true,
     title: "Captured",

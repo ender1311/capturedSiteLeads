@@ -31,7 +31,7 @@ vi.mock("./render-html", () => ({ fillReport: () => "<html></html>" }));
 vi.mock("./deliver", async (orig) => ({ ...(await orig<typeof import("./deliver")>()), deliver: h.deliver }));
 
 import { DeliveredNotRecordedError } from "./deliver";
-import { redeliverHeld } from "./redeliver";
+import { claimForRedeliver, deliverClaimed, redeliverHeld } from "./redeliver";
 
 const CONTENT = {
   first_name: "Jane", first_section: { photo: "photo-01.jpg", headline: "H" }, first_section_changes: [], fixes: [{}, {}],
@@ -99,6 +99,54 @@ describe("redeliverHeld", () => {
     h.deliver.mockRejectedValue(new Error("x"));
     await expect(redeliverHeld("L1", { force: true })).rejects.toThrow("x");
     expect(h.claim).not.toHaveBeenCalled();
+    expect(h.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("the admin path: claimForRedeliver then deliverClaimed", () => {
+  it("claims a held lead up front; a lead that isn't held or was claimed first is refused", async () => {
+    const claimed = await claimForRedeliver("L1");
+    expect(claimed).toMatchObject({ status: "claimed", row: { id: "L1" } });
+    expect(h.claim).toHaveBeenCalledWith("L1", ["held"]);
+    h.claim.mockResolvedValue(false);
+    expect(await claimForRedeliver("L1")).toEqual({ status: "claim_lost" });
+    h.row!.outcome = "sent";
+    h.claim.mockClear();
+    expect(await claimForRedeliver("L1")).toEqual({ status: "not_held", outcome: "sent" });
+    expect(h.claim).not.toHaveBeenCalled();
+    h.row = null;
+    expect(await claimForRedeliver("L1")).toEqual({ status: "not_found" });
+  });
+
+  it("delivers a claimed row without claiming again", async () => {
+    const row = { ...h.row!, outcome: "processing" } as never;
+    expect(await deliverClaimed(row)).toEqual({ status: "sent", issues: [] });
+    expect(h.claim).not.toHaveBeenCalled();
+    expect(h.deliver).toHaveBeenCalledTimes(1);
+    expect(h.update).not.toHaveBeenCalled();
+  });
+
+  it("puts a claimed row back to held when the rules block it, or anything fails before the email goes out", async () => {
+    const row = { ...h.row!, outcome: "processing" } as never;
+    h.issues = [{ field: "f", level: "error", message: "m" }];
+    expect(await deliverClaimed(row)).toMatchObject({ status: "blocked" });
+    expect(h.update).toHaveBeenLastCalledWith("L1", { outcome: "held" });
+    expect(h.deliver).not.toHaveBeenCalled();
+
+    h.issues = [];
+    h.update.mockClear();
+    await expect(deliverClaimed({ ...(row as object), content: null } as never)).rejects.toThrow(/no stored content/);
+    expect(h.update).toHaveBeenLastCalledWith("L1", { outcome: "held" });
+
+    h.update.mockClear();
+    h.deliver.mockRejectedValue(new Error("Resend and MailerLite down"));
+    await expect(deliverClaimed(row)).rejects.toThrow("down");
+    expect(h.update).toHaveBeenLastCalledWith("L1", { outcome: "held" });
+  });
+
+  it("never puts it back once the email went out", async () => {
+    h.deliver.mockRejectedValue(new DeliveredNotRecordedError("L1", "delivered but not recorded"));
+    await expect(deliverClaimed({ ...h.row!, outcome: "processing" } as never)).rejects.toBeInstanceOf(DeliveredNotRecordedError);
     expect(h.update).not.toHaveBeenCalled();
   });
 });

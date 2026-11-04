@@ -30,14 +30,14 @@ afterEach(() => {
 });
 
 const deletes = () => calls.filter((c) => c.method === "DELETE");
-const INPUT = { name: "Jane", email: "jane@example.com", pdfUrl: "https://p/x.pdf", subject: "Jane, your homepage fixes are ready", html: "<div>hi</div>" };
+const INPUT = { name: "Jane", email: "jane@example.com", pdfUrl: "https://p/x.pdf", subject: "Jane, your top homepage fixes are ready", html: "<div>hi</div>" };
 
 describe("sendPdfEmail", () => {
   it("sends the given subject and html, temp group deleted once sent", async () => {
     await sendPdfEmail(INPUT);
     const campaign = calls.find((c) => c.path === "/campaigns")!;
     const email = (campaign.body!.emails as { subject: string; content: string }[])[0];
-    expect(email.subject).toBe("Jane, your homepage fixes are ready");
+    expect(email.subject).toBe("Jane, your top homepage fixes are ready");
     expect(email.content).toContain("{$unsubscribe}");
     expect(campaign.body!.name).toBe("Homepage fixes delivery — jane@example.com");
     expect(deletes().map((c) => c.path)).toEqual(["/groups/g1"]);

@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { incrementEngagement } from "@/lib/db";
+import { recordEngagement } from "@/lib/db";
 
 // Resend webhooks are Svix-signed: HMAC-SHA256 over "<id>.<timestamp>.<body>"
 // keyed with the base64 part of the whsec_ secret; the svix-signature header
@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
-  let event: { type?: string; data?: { to?: string[] | string } };
+  let event: { type?: string; data?: { to?: string[] | string; email_id?: unknown } };
   try {
     event = JSON.parse(rawBody);
   } catch {
@@ -49,14 +49,16 @@ export async function POST(req: NextRequest) {
     event.type === "email.opened" ? "opens" : event.type === "email.clicked" ? "clicks" : null;
   const to = event.data?.to;
   const email = Array.isArray(to) ? to[0] : typeof to === "string" ? to : null;
-  if (!column || !email) {
+  const emailId = typeof event.data?.email_id === "string" && event.data.email_id ? event.data.email_id : null;
+  if (!column || (!email && !emailId)) {
     return NextResponse.json({ ok: true, ignored: true });
   }
 
   try {
-    await incrementEngagement(email, column);
+    // The exact email first (its Resend id is on the row that sent it), else the address.
+    await recordEngagement({ emailId, email }, column);
   } catch (e) {
-    console.error(`Engagement update failed for ${email}:`, (e as Error).message);
+    console.error(`Engagement update failed for ${email ?? emailId}:`, (e as Error).message);
   }
 
   return NextResponse.json({ ok: true });
