@@ -1,5 +1,5 @@
 import { Firecrawl, type ScrapeOptions } from "@mendable/firecrawl-js";
-import { DISMISS_SCRIPT, EXTRACT_SCRIPT } from "./page-script";
+import { DISMISS_SCRIPT, EXTRACT_SCRIPT, FRAME_SCRIPT, SCREEN_H, SCREEN_W, scrollStepScript } from "./page-script";
 import type { Asset, Capture, ImageCandidate, PageData } from "./types";
 
 export class CaptureError extends Error {
@@ -11,7 +11,6 @@ export class CaptureError extends Error {
   }
 }
 
-const VIEWPORT_H = 900;
 const MAX_PHOTOS = 3;
 const MIN_PHOTO_W = 800;
 const MAX_PHOTO_TRIES = 6;
@@ -23,14 +22,23 @@ const BROWSER_UA =
 const BOT_CHECK_RE =
   /just a moment|verify you are human|checking your browser|captcha|access denied|attention required|are you a robot/i;
 
-// The one Firecrawl call per report.
+// The one Firecrawl call per report. Firecrawl's action browser is 1920x100000, so the
+// page is re-loaded in a hidden same-origin 1440x900 iframe and read from there.
+const SCROLL_STEPS = [0.2, 0.4, 0.6, 0.8, 1];
 export const SCRAPE_OPTIONS: ScrapeOptions = {
-  formats: [{ type: "screenshot", fullPage: false, viewport: { width: 1440, height: VIEWPORT_H }, quality: 88 }],
+  formats: [{ type: "screenshot", fullPage: false, viewport: { width: SCREEN_W, height: SCREEN_H }, quality: 88 }],
   actions: [
     { type: "wait", milliseconds: 3000 },
     { type: "executeJavascript", script: DISMISS_SCRIPT },
-    { type: "scroll", direction: "down" }, { type: "scroll", direction: "down" }, { type: "scroll", direction: "down" },
-    { type: "scroll", direction: "up" }, { type: "scroll", direction: "up" }, { type: "scroll", direction: "up" },
+    { type: "executeJavascript", script: FRAME_SCRIPT },
+    { type: "wait", milliseconds: 4000 },
+    { type: "executeJavascript", script: DISMISS_SCRIPT },
+    // Step through the page so lazy images load, then back to the top.
+    ...SCROLL_STEPS.flatMap((f) => [
+      { type: "executeJavascript" as const, script: scrollStepScript(f) },
+      { type: "wait" as const, milliseconds: 300 },
+    ]),
+    { type: "executeJavascript", script: scrollStepScript(0) },
     { type: "wait", milliseconds: 1500 },
     { type: "executeJavascript", script: DISMISS_SCRIPT },
     { type: "executeJavascript", script: EXTRACT_SCRIPT },
@@ -40,7 +48,7 @@ export const SCRAPE_OPTIONS: ScrapeOptions = {
   timeout: 45000,
 };
 
-type ScrapeDoc = {
+export type ScrapeDoc = {
   screenshot?: string;
   actions?: { javascriptReturns?: { type: string; value: unknown }[] };
   metadata?: { statusCode?: number };
@@ -63,9 +71,12 @@ export function parseScrape(doc: ScrapeDoc): { page: PageData; screenshotUrl: st
     throw new CaptureError(BOT_CHECK_RE.test(text) ? "bot_check" : "unreachable", `Site answered HTTP ${status}`);
   }
   if (!page) throw new CaptureError("empty", "Firecrawl returned no page extraction");
+  if (BOT_CHECK_RE.test(`${page.title} ${page.sample}`)) {
+    throw new CaptureError("bot_check", "The site showed a bot check, so the homepage could not be seen");
+  }
   if (!doc.screenshot) throw new CaptureError("empty", "Firecrawl returned no screenshot");
 
-  // Every return before the extraction is a dismiss() run.
+  // Array returns before the extraction are dismiss() runs; the rest are status strings.
   const dismissed: string[] = [];
   for (const r of returns.slice(0, -1)) {
     const v = asJson(r.value);
@@ -89,11 +100,11 @@ async function download(fetchImpl: typeof fetch, url: string, timeoutMs: number)
   }
 }
 
-function photoOrder(imgs: ImageCandidate[]): ImageCandidate[] {
+function photoOrder(imgs: ImageCandidate[], screenH: number): ImageCandidate[] {
   const seen = new Set<string>();
   return imgs
     .filter((i) => !/\.svg(\?|$)/i.test(i.src) && i.w >= MIN_PHOTO_W && !seen.has(i.src) && !!seen.add(i.src))
-    .sort((a, b) => (a.y < VIEWPORT_H ? 0 : 1) - (b.y < VIEWPORT_H ? 0 : 1) || b.w * b.h - a.w * a.h);
+    .sort((a, b) => (a.y < screenH ? 0 : 1) - (b.y < screenH ? 0 : 1) || b.w * b.h - a.w * a.h);
 }
 
 const bareHost = (u: URL) => u.hostname.replace(/^www\./, "");
@@ -132,9 +143,10 @@ async function checkLinks(
 }
 
 export async function captureSite(url: string, opts: { fetchImpl?: typeof fetch } = {}): Promise<Capture> {
-  const fetchImpl = opts.fetchImpl ?? fetch;
   const target = /^https?:\/\//i.test(url) ? url : `https://${url}`;
-  const firecrawl = new Firecrawl({ apiKey: process.env.FIRECRAWL_API_KEY! });
+  const apiKey = process.env.FIRECRAWL_API_KEY;
+  if (!apiKey) throw new CaptureError("unreachable", "FIRECRAWL_API_KEY is not set, so the site could not be captured");
+  const firecrawl = new Firecrawl({ apiKey });
 
   let doc: ScrapeDoc;
   try {
@@ -142,22 +154,32 @@ export async function captureSite(url: string, opts: { fetchImpl?: typeof fetch 
   } catch (e) {
     throw new CaptureError("unreachable", `Firecrawl could not load ${target}: ${e instanceof Error ? e.message : String(e)}`);
   }
+  return captureFromDoc(target, doc, opts);
+}
+
+// Everything after the scrape: screenshot, photos, logo and link checks.
+export async function captureFromDoc(url: string, doc: ScrapeDoc, opts: { fetchImpl?: typeof fetch } = {}): Promise<Capture> {
+  const fetchImpl = opts.fetchImpl ?? fetch;
   const { page, screenshotUrl } = parseScrape(doc);
+  const screenH = page.screenH > 0 ? page.screenH : SCREEN_H;
 
   const before = await download(fetchImpl, screenshotUrl, DOWNLOAD_TIMEOUT_MS);
   if (!before) throw new CaptureError("empty", "Could not download the Firecrawl screenshot");
 
   const photosP = (async () => {
+    const candidates = photoOrder(page.imgs, screenH).slice(0, MAX_PHOTO_TRIES);
+    const assets = await Promise.all(candidates.map((c) => download(fetchImpl, c.src, DOWNLOAD_TIMEOUT_MS)));
     const photos: Capture["photos"] = [];
-    for (const candidate of photoOrder(page.imgs).slice(0, MAX_PHOTO_TRIES)) {
-      if (photos.length >= MAX_PHOTOS) break;
-      const asset = await download(fetchImpl, candidate.src, DOWNLOAD_TIMEOUT_MS);
-      if (asset && asset.mime.startsWith("image/")) photos.push({ ...asset, candidate, firstScreen: candidate.y < VIEWPORT_H });
-    }
+    candidates.forEach((candidate, i) => {
+      const asset = assets[i];
+      if (photos.length < MAX_PHOTOS && asset && asset.mime.startsWith("image/")) {
+        photos.push({ ...asset, candidate, firstScreen: candidate.y < screenH });
+      }
+    });
     return photos;
   })();
   const logoP = page.logo ? download(fetchImpl, page.logo.src, DOWNLOAD_TIMEOUT_MS) : Promise.resolve(null);
   const [photos, logo, linkStatus] = await Promise.all([photosP, logoP, checkLinks(fetchImpl, page)]);
 
-  return { url: target, page, before, photos, logo, linkStatus, capturedAt: new Date().toISOString() };
+  return { url, page, before, photos, logo, linkStatus, capturedAt: new Date().toISOString() };
 }

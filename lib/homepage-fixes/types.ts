@@ -9,6 +9,7 @@ export type PageData = {
   uppercaseHeadings: boolean; accent: string | null;
   buttons: { text: string; href: string; y: number }[];
   textLength: number; sample: string; dismissed: string[];
+  frame: boolean; screenH: number;  // extracted in the 1440x900 iframe; height of one screen in px
 };
 export type Asset = { data: Buffer; mime: string };
 export type Capture = {

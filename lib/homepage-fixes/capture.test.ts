@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import type { ImageCandidate, PageData } from "./types";
@@ -9,7 +9,7 @@ vi.mock("@mendable/firecrawl-js", () => ({
 }));
 
 import { CaptureError, captureSite, parseScrape } from "./capture";
-import { DISMISS_SCRIPT, EXTRACT_SCRIPT } from "./page-script";
+import { DISMISS_SCRIPT, EXTRACT_SCRIPT, FRAME_SCRIPT, scrollStepScript } from "./page-script";
 
 const fixture = JSON.parse(
   fs.readFileSync(path.join(__dirname, "fixtures/firecrawl-gabby.json"), "utf8"),
@@ -22,7 +22,8 @@ function fakePage(over: Partial<PageData> = {}): Omit<PageData, "dismissed"> {
     title: "Jane Doe Photography", finalUrl: "https://janedoe.com/", pageHeight: 4000, metaDesc: "",
     rows: [], imgs: [], nav: ["Home"], navTop: true, navOverPhoto: false, navBg: null, navColor: null,
     logo: null, fonts: { heading: "Lora", headingWeight: "400", body: "Lato" },
-    uppercaseHeadings: false, accent: null, buttons: [], textLength: 2000, sample: "Hello", ...over,
+    uppercaseHeadings: false, accent: null, buttons: [], textLength: 2000, sample: "Hello",
+    frame: true, screenH: 900, ...over,
   };
 }
 
@@ -54,7 +55,7 @@ function stubFetch() {
 
 describe("page scripts", () => {
   it("are parseable ES2017 without optional chaining or nullish coalescing", () => {
-    for (const s of [DISMISS_SCRIPT, EXTRACT_SCRIPT]) {
+    for (const s of [DISMISS_SCRIPT, EXTRACT_SCRIPT, FRAME_SCRIPT, scrollStepScript(0.5)]) {
       expect(() => new Function(`return ${s}`)).not.toThrow();
       expect(s).not.toMatch(/\?\.|\?\?/);
     }
@@ -68,6 +69,9 @@ describe("parseScrape", () => {
     expect(page.rows.length).toBeGreaterThan(20);
     expect(screenshotUrl.startsWith("https://")).toBe(true);
     expect(page.fonts.heading).not.toBe("");
+    expect(page.frame).toBe(true);
+    expect(page.screenH).toBe(900);
+    expect(page.pageHeight).toBeLessThan(100000);
   });
 
   it("merges dismissed popup texts", () => {
@@ -88,10 +92,24 @@ describe("parseScrape", () => {
     const bot = { ...fakeDoc(fakePage({ title: "Just a moment..." })), metadata: { statusCode: 403 } };
     try { parseScrape(bot); throw new Error("no throw"); } catch (e) { expect((e as CaptureError).kind).toBe("bot_check"); }
   });
+
+  it("throws bot_check on a 200 response whose page is a bot check", () => {
+    const doc = fakeDoc(fakePage({ title: "Example", sample: "Please verify you are human to continue" }));
+    try { parseScrape(doc); throw new Error("no throw"); } catch (e) { expect((e as CaptureError).kind).toBe("bot_check"); }
+  });
 });
 
 describe("captureSite", () => {
-  beforeEach(() => { scrape.mockReset(); });
+  beforeEach(() => { scrape.mockReset(); vi.stubEnv("FIRECRAWL_API_KEY", "fc-test"); });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it("throws unreachable without FIRECRAWL_API_KEY and never scrapes", async () => {
+    vi.stubEnv("FIRECRAWL_API_KEY", "");
+    const err = await captureSite("janedoe.com", { fetchImpl: stubFetch().impl }).catch((e: unknown) => e);
+    expect((err as CaptureError).kind).toBe("unreachable");
+    expect((err as Error).message).toMatch(/FIRECRAWL_API_KEY/);
+    expect(scrape).not.toHaveBeenCalled();
+  });
 
   it("makes exactly one basic-proxy scrape with the brief's options", async () => {
     scrape.mockResolvedValue(fakeDoc(fakePage()));
@@ -100,7 +118,10 @@ describe("captureSite", () => {
     const [url, opts] = scrape.mock.calls[0];
     expect(url).toBe("https://janedoe.com");
     expect(opts).toMatchObject({ proxy: "basic", timeout: 45000, onlyMainContent: false });
-    expect(opts.actions.filter((a: { type: string }) => a.type === "executeJavascript")).toHaveLength(3);
+    const scripts = opts.actions.filter((a: { type: string }) => a.type === "executeJavascript").map((a: { script: string }) => a.script);
+    expect(scripts.filter((x: string) => x === DISMISS_SCRIPT)).toHaveLength(3);
+    expect(scripts.indexOf(FRAME_SCRIPT)).toBe(1);
+    expect(scripts[scripts.length - 1]).toBe(EXTRACT_SCRIPT);
   });
 
   it("maps Firecrawl errors to unreachable", async () => {
@@ -131,10 +152,21 @@ describe("captureSite", () => {
       "https://janedoe.com/mid-lower.jpg",
     ]);
     expect(cap.photos.map((p) => p.firstScreen)).toEqual([true, false, false]);
-    expect(calls.some((c) => c.url.endsWith(".svg") || c.url.endsWith("small.jpg") || c.url.endsWith("tiny-lower.jpg"))).toBe(false);
+    expect(calls.some((c) => c.url.endsWith(".svg") || c.url.endsWith("small.jpg"))).toBe(false);
     expect(cap.before.mime).toBe("image/jpeg");
     expect(cap.logo?.mime).toBe("image/png");
     expect(cap.page.dismissed).toEqual(["Join my list"]);
+  });
+
+  it("uses the extracted screen height for firstScreen", async () => {
+    scrape.mockResolvedValue(fakeDoc(fakePage({
+      frame: false, screenH: 1080,
+      imgs: [img("https://janedoe.com/a.jpg", 1400, 900, 1000), img("https://janedoe.com/b.jpg", 1600, 900, 2000)],
+    })));
+    const cap = await captureSite("https://janedoe.com", { fetchImpl: stubFetch().impl });
+    expect(cap.photos.map((p) => [p.candidate.src, p.firstScreen])).toEqual([
+      ["https://janedoe.com/a.jpg", true], ["https://janedoe.com/b.jpg", false],
+    ]);
   });
 
   it("skips photos that fail to download", async () => {
