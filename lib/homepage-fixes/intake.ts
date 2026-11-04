@@ -1,8 +1,10 @@
 import { NextResponse, after, type NextRequest } from "next/server";
 import { z } from "zod";
 import { capRemaining, checkDailyLimits, normalizeEmail, visitorIp, type RateCheck } from "@/lib/abuse";
+import { getLiveModel } from "@/lib/guide-store";
 import { authorized, parseBody } from "@/lib/lead-intake";
 import { leadEmail, leadName, leadSiteUrl } from "@/lib/lead-fields";
+import { pickModel } from "@/lib/models";
 import { captureSite } from "./capture";
 import {
   DeliveredNotRecordedError, deliver, deliverFailed, resendReport, sendAlert, type DeliverLead,
@@ -227,8 +229,10 @@ export async function processLead(leadId: string, opts: { deadlineMs?: number } 
 
   try {
     const cached = await getCachedCapture(domain);
+    // The model picked in the admin (app_config llm_model); the default if it can't be read.
+    const model = pickModel(await getLiveModel().catch(() => null), process.env.LLM_MODEL);
     const result = await runHomepageFixes(
-      { firstName: firstWord(row.name), website: row.site_url, goal: lead.goal, capture: cached ?? undefined, deadlineMs: opts.deadlineMs },
+      { firstName: firstWord(row.name), website: row.site_url, goal: lead.goal, model, capture: cached ?? undefined, deadlineMs: opts.deadlineMs },
       {
         capture: async (url) => {
           const c = await captureSite(url);

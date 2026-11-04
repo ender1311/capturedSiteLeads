@@ -1,5 +1,5 @@
 // The homepage-fixes emails: report, can't see it, hobby, plus the internal alert.
-// Same look as lib/email-template.ts (deliveryEmailHtml), but its own shell: no &mdash;, and
+// The look of the old roadmap delivery email, in its own shell: no &mdash;, and
 // inline styles only, since the admin previews these in a CSP-restricted frame.
 // Copy is Maggie's to edit later; keep it free of dashes and exclamation points.
 

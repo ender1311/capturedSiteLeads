@@ -1,5 +1,3 @@
-import { deliveryEmailHtml, deliverySubject } from "./email-template";
-
 const API_BASE = "https://connect.mailerlite.com/api";
 
 function headers() {
@@ -55,17 +53,16 @@ function withUnsubscribe(html: string): string {
   return at >= 0 ? html.slice(0, at) + UNSUBSCRIBE_FOOTER + html.slice(at) : html + UNSUBSCRIBE_FOOTER;
 }
 
-// Sends the PDF-delivery email immediately via a single-recipient campaign.
-// The automation-email API can't write bodies, so campaigns are the only
-// fully-API path; each send uses a throwaway group that is deleted after.
-// Pass `subject` and `html` to send other copy (homepage fixes) instead of the
-// roadmap email; the unsubscribe link MailerLite requires is added if missing.
+// Sends one email immediately via a single-recipient campaign (the homepage-fixes fallback
+// when Resend errors). The automation-email API can't write bodies, so campaigns are the only
+// fully-API path; each send uses a throwaway group that is deleted after. The unsubscribe link
+// MailerLite requires is added if the html doesn't carry one.
 export async function sendPdfEmail(input: {
   name: string;
   email: string;
   pdfUrl: string;
-  subject?: string;
-  html?: string;
+  subject: string;
+  html: string;
 }): Promise<void> {
   const from = process.env.MAILERLITE_FROM_EMAIL || "jetluk+adam@gmail.com";
   const fromName = process.env.MAILERLITE_FROM_NAME || "Maggie | Captured Sites";
@@ -86,19 +83,17 @@ export async function sendPdfEmail(input: {
     const campaignRes = await ml("/campaigns", {
       method: "POST",
       body: JSON.stringify({
-        name: `${input.html ? "Homepage fixes delivery" : "Roadmap delivery"} — ${input.email}`.slice(0, 250),
+        name: `Homepage fixes delivery — ${input.email}`.slice(0, 250),
         type: "regular",
         groups: [groupId],
         emails: [
           {
-            subject: input.subject ?? deliverySubject(input.name),
+            subject: input.subject,
             from_name: fromName,
             from,
             reply_to: from,
             // MailerLite requires an unsubscribe link in campaign content
-            content: input.html
-              ? withUnsubscribe(input.html)
-              : deliveryEmailHtml(input.name, input.pdfUrl, { footerHtml: UNSUBSCRIBE_FOOTER }),
+            content: withUnsubscribe(input.html),
           },
         ],
       }),

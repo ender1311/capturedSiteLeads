@@ -62,3 +62,15 @@ export const TOKENS_PER_REPORT = { input: 5600, output: 1500 };
 export function costPerReport(m: ModelOption): number {
   return TOKENS_PER_REPORT.input * m.inputPerToken + TOKENS_PER_REPORT.output * m.outputPerToken;
 }
+
+/**
+ * The model reports are written with: the live setting saved from the admin, else LLM_MODEL,
+ * else the default. Only ids in MODEL_OPTIONS count, so a stale or mistyped setting can't break
+ * the pipeline or its cost numbers.
+ */
+export function pickModel(live: string | null | undefined, env: string | null | undefined): string {
+  const known = (id: string | null | undefined) => !!id && MODEL_OPTIONS.some((m) => m.id === id.trim());
+  if (known(live)) return live!.trim();
+  if (known(env)) return env!.trim();
+  return DEFAULT_MODEL;
+}

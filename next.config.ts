@@ -13,7 +13,9 @@ const nextConfig: NextConfig = {
     "/api/lead": HOMEPAGE_FIXES_FILES,
     "/api/homepage-fixes": HOMEPAGE_FIXES_FILES,
     "/api/cron/homepage-fixes": HOMEPAGE_FIXES_FILES,
-    "/api/test-generate": ["./node_modules/@sparticuz/chromium/bin/**"],
+    // The admin's Re-send button re-renders a held report. The key is a glob: `*` stands for the
+    // [id] segment (brackets would be read as a character class).
+    "/api/admin/leads/*/resend": HOMEPAGE_FIXES_FILES,
   },
   turbopack: { root: __dirname },
 };

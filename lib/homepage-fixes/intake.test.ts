@@ -19,11 +19,13 @@ const h = vi.hoisted(() => {
     rows: [] as Row[],
     seq: 0,
     capAlertDay: null as string | null,
+    liveModel: null as string | null,
     afterQueue: [] as (() => unknown)[],
   };
   const dom = (s: string) =>
     s.trim().toLowerCase().replace(/^[a-z]+:\/\//, "").replace(/^www\./, "").split(/[/:?#]/)[0];
   const find = (id: string) => state.rows.find((r) => r.id === id) ?? null;
+  const h_liveModel = () => (state.liveModel ? [{ value: state.liveModel, updated_at: "2026-11-04" }] : []);
 
   const store = {
     insertHfLead: vi.fn(async (i: { name: string; email: string; siteUrl: string; goal: string; ip: string | null; outcome: string }) => {
@@ -87,6 +89,8 @@ const h = vi.hoisted(() => {
   // checkDailyLimits' query: this report type's rows from the last 24 hours.
   const tag = vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join("?");
+    // getLiveModel: the model picked in the admin.
+    if (/from app_config/.test(text)) return h_liveModel();
     if (/from leads/.test(text) && /report_type/.test(text)) {
       return state.rows.filter((r) => r.report_type === values[0]).map((r) => ({ email: r.email, ip: r.ip, outcome: r.outcome }));
     }
@@ -182,6 +186,7 @@ beforeEach(() => {
   h.state.rows = [];
   h.state.seq = 0;
   h.state.capAlertDay = null;
+  h.state.liveModel = null;
   h.state.afterQueue = [];
   sent = [];
   for (const f of Object.values(h.store)) f.mockClear();
@@ -242,11 +247,20 @@ describe("POST /api/homepage-fixes", () => {
     await flushAfter();
     expect(h.runHomepageFixes).toHaveBeenCalledTimes(1);
     expect(h.runHomepageFixes.mock.calls[0][0]).toMatchObject({
-      firstName: "Jane", website: "https://janedoe.com", goal: "More inquiries from couples",
+      firstName: "Jane", website: "https://janedoe.com", goal: "More inquiries from couples", model: "google/gemini-3.8-flash",
     });
     expect(h.deliver).toHaveBeenCalledWith("lead-1",
       { name: "Jane", email: "jane@example.com", siteUrl: "https://janedoe.com", goal: "More inquiries from couples" },
       SENT_RESULT);
+  });
+
+  it("builds with the model picked in the admin; an unknown saved id falls back to the default", async () => {
+    h.state.liveModel = "google/gemini-2.5-flash-lite";
+    await postAndSettle(JANE);
+    expect(h.runHomepageFixes.mock.calls[0][0]).toMatchObject({ model: "google/gemini-2.5-flash-lite" });
+    h.state.liveModel = "made-up/model";
+    await postAndSettle({ ...JANE, email: "other@example.com" });
+    expect(h.runHomepageFixes.mock.calls[1][0]).toMatchObject({ model: "google/gemini-3.8-flash" });
   });
 
   it("re-checks the email and the website server-side with the visitor's own site text", async () => {
