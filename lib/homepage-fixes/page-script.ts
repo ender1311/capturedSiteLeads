@@ -138,15 +138,15 @@ export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
     rows.push(row);
   });
   rows.sort(function (a, b) { return a.y - b.y || a.x - b.x; });
-  var imgs = [];
+  var imgs = []; var imgEl = new Map();
   D.querySelectorAll('img').forEach(function (im) {
     var r = im.getBoundingClientRect(); var src = im.currentSrc || im.src;
-    if (src && r.width >= 250 && r.height >= 160) imgs.push({ src: src, w: Math.round(r.width), h: Math.round(r.height), y: Math.round(r.top + sy), alt: im.alt || '', kind: 'img' });
+    if (src && r.width >= 250 && r.height >= 160) { var ci = { src: src, w: Math.round(r.width), h: Math.round(r.height), y: Math.round(r.top + sy), alt: im.alt || '', kind: 'img' }; imgs.push(ci); imgEl.set(ci, im); }
   });
   D.querySelectorAll('body *').forEach(function (el) {
     var bg = W.getComputedStyle(el).backgroundImage; var m = bg && bg.match(/url\\(["']?(.*?)["']?\\)/);
     if (!m) return; var r = el.getBoundingClientRect();
-    if (r.width >= 400 && r.height >= 250) imgs.push({ src: new URL(m[1], W.location.href).href, w: Math.round(r.width), h: Math.round(r.height), y: Math.round(r.top + sy), alt: '', kind: 'background' });
+    if (r.width >= 400 && r.height >= 250) { var cb = { src: new URL(m[1], W.location.href).href, w: Math.round(r.width), h: Math.round(r.height), y: Math.round(r.top + sy), alt: '', kind: 'background' }; imgs.push(cb); imgEl.set(cb, el); }
   });
   // Measure the content: the top window's scrollHeight follows its 100000px viewport, and
   // some builders (Pixieset) scroll an inner container, so the frame's scrollHeight is one screen.
@@ -218,23 +218,80 @@ export const EXTRACT_SCRIPT = `(function () {${RESOLVE}
   navLinks = navLinks.filter(function (t) { var k = t.toLowerCase(); if (seenNav[k]) return false; seenNav[k] = 1; return true; }).slice(0, 8);
   var navBg = null, navColor = null, navOverPhoto = false;
   var firstScreenImgs = imgs.filter(function (i) { return i.y < SH; }).sort(function (a, b) { return b.w * b.h - a.w * a.h; });
+  // Nav style. "Over the photo" needs all three: (a) no solid background on the nav's walk
+  // (link up to its header/fixed container, plus the header's large inner layers), (b) the
+  // nav box overlapping the largest first-screen photo by at least half its height, and
+  // (c) the elements under the nav bar (elementsFromPoint, skipping link text) being the photo.
+  var solid = function (el) {
+    var cs = W.getComputedStyle(el);
+    if (!transparent(cs.backgroundColor)) return cs.backgroundColor;
+    return null;
+  };
+  var bgImage = function (el) { var b = W.getComputedStyle(el).backgroundImage; return b && b !== 'none'; };
   if (navEls.length) {
     var link = navEls[0];
-    var header = link.closest('header,[role="banner"]') || link.closest('nav') || link.parentElement || link;
-    var hs = W.getComputedStyle(header);
     navColor = W.getComputedStyle(link).color;
-    var headerClear = transparent(hs.backgroundColor) && (!hs.backgroundImage || hs.backgroundImage === 'none');
-    if (headerClear && firstScreenImgs.length) {
-      var hr = header.getBoundingClientRect(); var hTop = hr.top + sy; var hBottom = hTop + hr.height;
-      var big = firstScreenImgs[0];
-      navOverPhoto = hTop < big.y + big.h && hBottom > big.y;
-    }
-    if (!transparent(hs.backgroundColor)) navBg = hs.backgroundColor;
-    else if (!navOverPhoto) {
-      for (var p = header.parentElement; p; p = p.parentElement) {
-        var pc = W.getComputedStyle(p).backgroundColor;
-        if (!transparent(pc)) { navBg = pc; break; }
+    var header = link.closest('header,[role="banner"]');
+    if (!header) {
+      for (var fx = link.parentElement; fx && fx !== D.body; fx = fx.parentElement) {
+        var fp = W.getComputedStyle(fx).position;
+        if (fp === 'fixed' || fp === 'sticky') { header = fx; break; }
       }
+    }
+    header = header || link.closest('nav') || link.parentElement || link;
+    var hr = header.getBoundingClientRect();
+    var hero = firstScreenImgs[0] || null;
+    var heroEl = hero ? imgEl.get(hero) : null;
+    var walkBg = null, walkImage = false;
+    for (var we = link; we; we = we.parentElement) {
+      var c0 = solid(we); if (c0) { walkBg = c0; break; }
+      if (we !== link && bgImage(we) && we !== heroEl) { walkImage = true; break; }
+      if (we === header) break;
+    }
+    if (!walkBg && !walkImage) {
+      // Large inner layers: e.g. Squarespace's absolutely positioned header background div.
+      var layers = arr(header.querySelectorAll('*')).filter(function (el) {
+        if (el === heroEl || (heroEl && el.contains(heroEl))) return false;
+        var r = el.getBoundingClientRect();
+        return r.width >= hr.width * 0.8 && r.height >= hr.height * 0.5 && r.height <= hr.height * 1.5;
+      });
+      for (var li = 0; li < layers.length; li++) {
+        var c1 = solid(layers[li]); if (c1) { walkBg = c1; break; }
+        if (bgImage(layers[li])) { walkImage = true; break; }
+      }
+    }
+    var hTop = hr.top + sy, hBottom = hTop + hr.height;
+    var overlapOk = !!hero && hr.height > 0 && Math.min(hBottom, hero.y + hero.h) - Math.max(hTop, hero.y) >= hr.height * 0.5;
+    // Cross-check under the bar, away from link text.
+    var votesOver = 0, votesBar = 0, pointBg = null;
+    if (heroEl && hr.height > 0 && D.elementsFromPoint) {
+      var py = hr.top + hr.height / 2;
+      [0.02, 0.25, 0.5, 0.75, 0.98].forEach(function (fxp) {
+        var px = hr.left + hr.width * fxp;
+        if (py < 0 || py >= W.innerHeight || px < 0 || px >= W.innerWidth) return;
+        var stack = D.elementsFromPoint(px, py);
+        if (stack.length && stack[0].closest('a,button')) return;
+        for (var si = 0; si < stack.length; si++) {
+          var se = stack[si];
+          if (se === D.body || se === D.documentElement) break;
+          if (se === heroEl || heroEl.contains(se) || (se.contains(heroEl) && !se.contains(header))) { votesOver++; return; }
+          var c2 = solid(se);
+          if (c2 || bgImage(se)) { votesBar++; if (c2 && !pointBg) pointBg = c2; return; }
+        }
+        votesBar++;
+      });
+    }
+    var crossOver = votesOver + votesBar === 0 ? true : votesOver > votesBar;
+    navOverPhoto = !walkBg && !walkImage && overlapOk && crossOver;
+    if (!navOverPhoto) {
+      navBg = walkBg || pointBg;
+      if (!navBg) {
+        for (var p = header.parentElement; p; p = p.parentElement) {
+          var pc = W.getComputedStyle(p).backgroundColor;
+          if (!transparent(pc)) { navBg = pc; break; }
+        }
+      }
+      if (!navBg) navBg = '#FFFFFF';
     }
   }
   var logoEl = arr(D.querySelectorAll('img')).find(function (im) { var r = im.getBoundingClientRect(); return r.top + sy < 200 && r.width > 40 && (/logo/i.test(im.src + im.alt + im.className + ((im.closest('a,div') || {}).className || '')) || im.closest('header')); });
