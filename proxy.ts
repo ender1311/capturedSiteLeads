@@ -3,11 +3,14 @@ import { auth, isAllowedEmail } from "@/auth";
 
 // Machine-to-machine routes keep their own auth (shared secret / HMAC signature)
 const PUBLIC_PREFIXES = ["/api/auth/", "/api/webhook/"];
+// Exact paths reached by visitors on capturedsites.com (the homepage-fixes
+// on-page check and the script that calls it); rate-limited and CORS-scoped.
+const PUBLIC_PATHS = new Set(["/api/lead", "/api/homepage-fixes/check", "/homepage-fixes-check.js"]);
 
 export default auth((req) => {
   const { pathname } = req.nextUrl;
   // exact match only — /api/leads/* (dashboard CRUD) must stay session-protected
-  if (pathname === "/api/lead" || PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))) return;
+  if (PUBLIC_PATHS.has(pathname) || PUBLIC_PREFIXES.some((p) => pathname.startsWith(p))) return;
 
   // Re-check the allowlist on every request: removing an email from
   // ALLOWED_EMAILS must revoke access immediately, not at JWT expiry.
