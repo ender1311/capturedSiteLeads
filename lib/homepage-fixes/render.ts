@@ -88,7 +88,10 @@ const MEASURE = `(() => {
   const p = photo.getBoundingClientRect();
   const overflow = copy.scrollWidth > copy.clientWidth + 1 || (!!h1 && h1.scrollWidth > h1.clientWidth + 1)
     || box.top < p.top - 1 || box.top + box.height > p.bottom + 1 || box.left < p.left - 1 || box.left + box.width > p.right + 1;
-  return { copy: r(box), photo: r(p), overflow };
+  const inside = box.top >= p.top - 1 && box.top + box.height <= p.bottom + 1;
+  const fit = h1 && h1.scrollWidth > h1.clientWidth + 1 && copy.scrollWidth <= Math.max(copy.clientWidth, h1.scrollWidth) + 1 && inside
+    ? h1.clientWidth / h1.scrollWidth : undefined;
+  return { copy: r(box), photo: r(p), overflow, fit };
 })()`;
 
 /** The photo's own size, decoded in the page from its data URI. */
@@ -120,9 +123,9 @@ export type Placed = {
   image: Buffer;
   /** The section as rendered: the chosen layout, focus and any zoom, scale, width or glue change. */
   section: FirstSection;
-  placement: Placement; overlap: number; score: number; clean: boolean;
+  placement: Placement; face: number; overlap: number; score: number; clean: boolean;
   /** Every candidate measured, in order (for the run log). */
-  tried: { placement: Placement; overflow: boolean; overlap: number; score: number }[];
+  tried: { placement: Placement; overflow: boolean; face: number; overlap: number; rejected: boolean }[];
 };
 
 /**
@@ -163,8 +166,8 @@ export function placeAfter(s: FirstSection, photoUri: string, logoUri?: string, 
       await show(section);
       const el = await page.$("#frame");
       const image = Buffer.from(await el!.screenshot({ type: "jpeg", quality: 90 }));
-      return { image, section, placement: chosen.placement, overlap: chosen.overlap, score: chosen.score, clean: chosen.ok,
-        tried: tried.map((t) => ({ placement: t.placement, overflow: t.measured.overflow, overlap: Math.round(t.overlap), score: Math.round(t.score) })) };
+      return { image, section, placement: chosen.placement, face: chosen.face, overlap: chosen.overlap, score: chosen.score, clean: chosen.ok,
+        tried: tried.map((t) => ({ placement: t.placement, overflow: t.measured.overflow, face: Math.round(t.face), overlap: Math.round(t.overlap), rejected: t.rejected })) };
     })
   );
 }

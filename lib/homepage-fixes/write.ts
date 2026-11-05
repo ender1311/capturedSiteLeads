@@ -382,19 +382,31 @@ export async function lookCheck(after: Buffer, model: ModelArg = DEFAULT_MODEL):
 
 // ---------- people boxes ----------
 
-const peopleSchema = z.object({ people: z.array(z.object({ box_2d: z.array(z.number()) })) });
+const peopleSchema = z.object({ people: z.array(z.object({ face_2d: z.array(z.number()), body_2d: z.array(z.number()) })) });
 
-const PEOPLE_PROMPT = `Find every visible person in this photo. For each one, give box_2d as [ymin, xmin, ymax, xmax], each 0 to 1000 relative to the image, covering the head and upper body: from the top of the head down to the waist. People turned fully away from the camera and tiny people far in the background may be left out. An empty list if there are no people.`;
+const PEOPLE_PROMPT = `Find every visible person in this photo. For each one give two boxes, each [ymin, xmin, ymax, xmax], each 0 to 1000 relative to the image.
+face_2d: the face alone, from hairline to chin and ear to ear.
+body_2d: the head and upper body, from the top of the head down to the waist.
+People turned fully away from the camera and tiny people far in the background may be left out. An empty list if there are no people.`;
 
+type Box4 = [number, number, number, number];
 /** A box Gemini returned, made safe: four numbers, clamped to 0..1000, with a real area. */
-function cleanBox(b: number[]): PersonBox | null {
-  if (b.length !== 4 || !b.every((n) => Number.isFinite(n))) return null;
+function cleanBox(b: number[] | undefined): Box4 | null {
+  if (!b || b.length !== 4 || !b.every((n) => Number.isFinite(n))) return null;
   const [ymin, xmin, ymax, xmax] = b.map((n) => Math.min(1000, Math.max(0, n)));
-  return ymax > ymin && xmax > xmin ? { box: [ymin, xmin, ymax, xmax] } : null;
+  return ymax > ymin && xmax > xmin ? [ymin, xmin, ymax, xmax] : null;
+}
+
+/** One person: the body box is required; a face box is kept only when it is valid. */
+function cleanPerson(p: { face_2d?: number[]; body_2d?: number[] }): PersonBox | null {
+  const body = cleanBox(p.body_2d);
+  const face = cleanBox(p.face_2d);
+  if (!body) return face ? { box: face, face } : null;
+  return face ? { box: body, face } : { box: body };
 }
 
 /**
- * Where the people are in a photo (head to waist), so the mockup's words can stay off them.
+ * Where the people and their faces are in a photo, so the mockup's words can stay off them.
  * Never throws: on any failure the boxes are empty and the mockup is placed as before.
  */
 export async function locatePeople(photo: Buffer, mime: string, model: ModelArg = DEFAULT_MODEL): Promise<{ boxes: PersonBox[]; usage: Usage }> {
@@ -411,10 +423,12 @@ export async function locatePeople(photo: Buffer, mime: string, model: ModelArg 
           { type: "file", data: photo, mediaType: mime },
         ],
       }],
-      maxOutputTokens: 1000,
+      // Two boxes a person is about 35 tokens; low thinking adds about 50. 500 keeps a crowded photo
+      // possible and caps the worst case near 0.2 cents (truncation just means no boxes).
+      maxOutputTokens: 500,
       providerOptions: providerOptions("low"),
     }));
-    const boxes = r.object.people.map((p) => cleanBox(p.box_2d)).filter((b): b is PersonBox => b !== null).slice(0, 12);
+    const boxes = r.object.people.map(cleanPerson).filter((b): b is PersonBox => b !== null).slice(0, 12);
     return { boxes, usage: usageOf(r, model) };
   } catch {
     return { boxes: [], usage: { ...ZERO } };

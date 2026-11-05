@@ -4,8 +4,9 @@ import type { Layout } from "./types";
 // it and the button off people's faces and upper bodies. Pure geometry; the renderer measures each
 // candidate in Chromium and this module decides. All rects are frame pixels (the 1400x878 #frame).
 
-/** One person from locatePeople: [ymin, xmin, ymax, xmax], 0 to 1000, normalized to the photo. */
-export type PersonBox = { box: [number, number, number, number] };
+/** One person from locatePeople: [ymin, xmin, ymax, xmax], 0 to 1000, normalized to the photo.
+ * box: head to waist; face: the face alone (optional, older callers send only box). */
+export type PersonBox = { box: [number, number, number, number]; face?: [number, number, number, number] };
 export type Rect = { x: number; y: number; w: number; h: number };
 export type Size = { w: number; h: number };
 
@@ -18,11 +19,16 @@ export type Placement = {
 };
 
 /** What the renderer measured for one candidate. natural is the photo's own size (if it decoded). */
-export type Measured = { copy: Rect; photo: Rect; overflow: boolean; natural?: Size };
+export type Measured = {
+  copy: Rect; photo: Rect; overflow: boolean; natural?: Size;
+  /** When only the headline is too wide (a word longer than the column): its width / the width it needs. */
+  fit?: number;
+};
 
-export const COPY_PAD = 24;
-export const FACE_BAND = 0.35; // top share of a person box treated as the face
-export const FACE_WEIGHT = 4;
+export const COPY_PAD = 24; // against bodies
+export const FACE_PAD = 40; // against faces
+export const FACE_BAND = 0.35; // top share of a body box used as the face when there is no face box
+export const FACE_WEIGHT = 10;
 export const DEFAULT_WIDTH: Record<"left" | "right", number> = { left: 640, right: 600 };
 /** Size steps for left/right: the default, then a smaller headline in a narrower column. */
 export const SIZE_STEPS: Record<"left" | "right", { scale: number; width: number }[]> = {
@@ -30,6 +36,8 @@ export const SIZE_STEPS: Record<"left" | "right", { scale: number; width: number
   right: [{ scale: 1, width: 600 }, { scale: 0.85, width: 480 }, { scale: 0.72, width: 420 }],
 };
 export const ZOOMS = [1.25, 1.5];
+/** Smallest headline scale the shrink-to-fit step may use (a single word wider than its column). */
+export const MIN_FIT_SCALE = 0.6;
 
 export const parseFocus = (f: string): [number, number] => {
   const m = f.trim().match(/^(\d{1,3})% (\d{1,3})%$/);
@@ -65,32 +73,36 @@ export function mapBox(b: PersonBox, natural: Size, photo: Rect, focus: string, 
   return { x: a.x, y: a.y, w: c.x - a.x, h: c.y - a.y };
 }
 
-/** Overlap of the padded copy block with each visible person: plain area, and a score with faces x4. */
-export function overlapOf(copy: Rect, people: Rect[], photo: Rect): { area: number; score: number } {
-  const c = pad(copy, COPY_PAD);
-  let a = 0, score = 0;
-  for (const p of people) {
-    const vis = intersect(p, photo);
-    if (!vis) continue;
-    const body = area(intersect(c, vis));
-    const face = area(intersect(c, intersect(faceBand(p), photo) ?? { x: 0, y: 0, w: 0, h: 0 }));
-    a += body;
-    score += body + (FACE_WEIGHT - 1) * face;
-  }
-  return { area: a, score };
+/** Where a person's face is in frame pixels: their face box, or the top of the body box without one. */
+export function faceOf(b: PersonBox, natural: Size, photo: Rect, focus: string, zoom = 1): Rect {
+  return b.face ? mapBox({ box: b.face }, natural, photo, focus, zoom) : faceBand(mapBox(b, natural, photo, focus, zoom));
 }
 
-/** Share of the faces' area that falls outside the photo area (cut off by the frame). */
-export function faceCut(people: Rect[], photo: Rect): number {
-  let total = 0, inside = 0;
+export type Person = { body: Rect; face: Rect };
+export const peopleIn = (boxes: PersonBox[], natural: Size, photo: Rect, focus: string, zoom = 1): Person[] =>
+  boxes.map((b) => ({ body: mapBox(b, natural, photo, focus, zoom), face: faceOf(b, natural, photo, focus, zoom) }));
+
+/**
+ * How much the copy block touches people, counting only what is visible in the photo area.
+ * face: the copy padded 40 px against each face (the hard rule). body: padded 24 px against each
+ * head-to-waist box (the soft rule). score = face x 10 + body.
+ */
+export function overlapOf(copy: Rect, people: Person[], photo: Rect): { face: number; body: number; score: number } {
+  const cf = pad(copy, FACE_PAD), cb = pad(copy, COPY_PAD);
+  let face = 0, body = 0;
   for (const p of people) {
-    const f = faceBand(p);
-    total += area(f);
-    inside += area(intersect(f, photo));
+    face += area(intersect(cf, intersect(p.face, photo) ?? NONE));
+    body += area(intersect(cb, intersect(p.body, photo) ?? NONE));
   }
-  return total ? 1 - inside / total : 0;
+  return { face, body, score: FACE_WEIGHT * face + body };
 }
-const MAX_ZOOM_CUT = 0.05;
+const NONE: Rect = { x: 0, y: 0, w: 0, h: 0 };
+
+/** Area of the faces that falls outside the photo area (cut off by the frame), in px². */
+export function faceCut(people: Person[], photo: Rect): number {
+  return people.reduce((sum, p) => sum + area(p.face) - area(intersect(p.face, photo)), 0);
+}
+const cutsFace = (people: Person[], photo: Rect) => faceCut(people, photo) > 0.5;
 
 // ---------- candidates ----------
 
@@ -104,25 +116,24 @@ const sized = (layout: "left" | "right", focus: string, zoom?: number): Placemen
 
 /**
  * Zoomed-in focus that pushes the people's center away from the text: toward 75% of the width when
- * the text is on the left, 25% when it is on the right. The vertical focus stays the model's unless
- * that cuts a face off the top or bottom, then the nearest focus that keeps faces in.
+ * the text is on the left, 25% when it is on the right, keeping every face wholly in the photo area
+ * (ties: the vertical focus nearest the model's). null when no focus keeps the faces in.
  */
-export function zoomFocus(boxes: PersonBox[], natural: Size, photo: Rect, base: string, zoom: number, text: "left" | "right"): string {
+export function zoomFocus(boxes: PersonBox[], natural: Size, photo: Rect, base: string, zoom: number, text: "left" | "right"): string | null {
   const [, by] = parseFocus(base);
-  const union = (f: string) => {
-    const rs = boxes.map((b) => mapBox(b, natural, photo, f, zoom));
-    const x0 = Math.min(...rs.map((r) => r.x)), x1 = Math.max(...rs.map((r) => r.x + r.w));
-    return { rs, cx: (x0 + x1) / 2 };
-  };
   const target = photo.x + photo.w * (text === "left" ? 0.75 : 0.25);
-  let fx = 50, best = Infinity;
+  let best: { f: string; d: number; dy: number } | null = null;
   for (let x = 0; x <= 100; x += 5) {
-    const d = Math.abs(union(focusOf(x, by)).cx - target);
-    if (d < best - 0.5) { best = d; fx = x; }
+    for (let y = 0; y <= 100; y += 5) {
+      const f = focusOf(x, y);
+      const ps = peopleIn(boxes, natural, photo, f, zoom);
+      if (cutsFace(ps, photo)) continue;
+      const cx = (Math.min(...ps.map((p) => p.body.x)) + Math.max(...ps.map((p) => p.body.x + p.body.w))) / 2;
+      const d = Math.abs(cx - target), dy = Math.abs(y - by);
+      if (!best || d < best.d - 0.5 || (Math.abs(d - best.d) <= 0.5 && dy < best.dy)) best = { f, d, dy };
+    }
   }
-  const ys = [by, ...Array.from({ length: 21 }, (_, i) => i * 5).sort((a, b) => Math.abs(a - by) - Math.abs(b - by))];
-  const fy = ys.find((y) => faceCut(union(focusOf(fx, y)).rs, photo) <= MAX_ZOOM_CUT) ?? by;
-  return focusOf(fx, fy);
+  return best?.f ?? null;
 }
 
 /**
@@ -137,7 +148,10 @@ export function candidates(base: Placement, boxes: PersonBox[], natural: Size | 
   if (boxes.length && natural && photo) {
     // Text goes where the people are not: the side away from their center in the as-written render.
     const text: "left" | "right" = peopleCenter !== undefined && peopleCenter < photo.x + photo.w / 2 ? "right" : "left";
-    for (const z of ZOOMS) out.push(...sized(text, zoomFocus(boxes, natural, photo, base.photo_focus, z, text), z));
+    for (const z of ZOOMS) {
+      const f = zoomFocus(boxes, natural, photo, base.photo_focus, z, text);
+      if (f) out.push(...sized(text, f, z));
+    }
   }
   for (const l of ["center", "box"] as const) out.push({ layout: l, photo_focus: base.photo_focus });
   const key = (p: Placement) => JSON.stringify([p.layout, p.photo_focus, p.photo_zoom, p.headline_scale, p.copy_width]);
@@ -147,20 +161,42 @@ export function candidates(base: Placement, boxes: PersonBox[], natural: Size | 
 
 // ---------- search ----------
 
-export type Tried = { placement: Placement; measured: Measured; overlap: number; score: number; cut: number; ok: boolean };
+export type Tried = {
+  placement: Placement; measured: Measured;
+  /** px² of padded copy on faces (hard) and on bodies (soft); score = face x 10 + body. */
+  face: number; overlap: number; score: number;
+  /** A zoom that pushes part of a face out of the photo area: never chosen. */
+  rejected: boolean; ok: boolean;
+};
 
 function judge(p: Placement, m: Measured, boxes: PersonBox[]): Tried {
-  const people = m.natural ? boxes.map((b) => mapBox(b, m.natural!, m.photo, p.photo_focus, p.photo_zoom ?? 1)) : [];
-  const { area: overlap, score } = overlapOf(m.copy, people, m.photo);
-  const cut = faceCut(people, m.photo);
-  const ok = !m.overflow && overlap === 0 && (!(p.photo_zoom && p.photo_zoom > 1) || cut <= MAX_ZOOM_CUT);
-  return { placement: p, measured: m, overlap, score, cut, ok };
+  const zoom = p.photo_zoom ?? 1;
+  const people = m.natural ? peopleIn(boxes, m.natural, m.photo, p.photo_focus, zoom) : [];
+  const { face, body, score } = overlapOf(m.copy, people, m.photo);
+  const rejected = zoom > 1 && cutsFace(people, m.photo);
+  const ok = !m.overflow && face === 0 && body === 0 && !rejected;
+  return { placement: p, measured: m, face, overlap: body, score, rejected, ok };
+}
+
+const side = (t: Tried) => t.placement.layout === "left" || t.placement.layout === "right";
+const least = (ts: Tried[], by: (t: Tried) => number) => ts.reduce((a, b) => (by(b) < by(a) ? b : a));
+
+/** With no clean candidate: no overflow if any avoids it; then no face contact (side layouts first, least body overlap); else the lowest score. Ties: the earlier one. */
+export function fallback(tried: Tried[]): Tried {
+  const usable = tried.some((t) => !t.rejected) ? tried.filter((t) => !t.rejected) : tried;
+  const pool = usable.some((t) => !t.measured.overflow) ? usable.filter((t) => !t.measured.overflow) : usable;
+  const faceFree = pool.filter((t) => t.face === 0);
+  if (faceFree.length) {
+    const sides = faceFree.filter(side);
+    return least(sides.length ? sides : faceFree, (t) => t.overlap);
+  }
+  return least(pool, (t) => t.score);
 }
 
 /**
- * Tries candidates in order and returns the first with no overflow and no overlap. A headline that
- * overflows with its last two words glued is measured again unglued. If none passes: the
- * non-overflowing candidate with the lowest face-weighted overlap (ties: the earlier one).
+ * Tries candidates in order and returns the first with no overflow, no face contact and no body
+ * overlap. A headline that overflows with its last two words glued is measured again unglued.
+ * If none is clean, see fallback.
  */
 export async function searchPlacement(
   base: Placement, boxes: PersonBox[], measure: (p: Placement) => Promise<Measured>,
@@ -172,6 +208,15 @@ export async function searchPlacement(
     if (m.overflow) {
       q = { ...p, headline_glue: false };
       m = await measure(q);
+    }
+    // Still too wide unglued: one word is longer than the column. Shrink the headline just enough.
+    if (m.overflow && m.fit && m.fit < 1) {
+      const scale = Math.floor((q.headline_scale ?? 1) * m.fit * 100) / 100 - 0.01;
+      if (scale >= MIN_FIT_SCALE) {
+        const r = { ...q, headline_scale: scale };
+        const m2 = await measure(r);
+        if (!m2.overflow) { q = r; m = m2; }
+      }
     }
     const t = judge(q, m, boxes);
     tried.push(t);
@@ -186,7 +231,5 @@ export async function searchPlacement(
     const t = await run(p);
     if (t.ok) return { chosen: t, tried };
   }
-  const pool = tried.some((t) => !t.measured.overflow) ? tried.filter((t) => !t.measured.overflow) : tried;
-  const chosen = pool.reduce((a, b) => (b.score < a.score ? b : a));
-  return { chosen, tried };
+  return { chosen: fallback(tried), tried };
 }

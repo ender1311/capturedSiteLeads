@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  candidates, faceCut, mapBox, overlapOf, searchPlacement, zoomFocus,
+  candidates, faceCut, fallback, mapBox, overlapOf, peopleIn, searchPlacement, zoomFocus,
   type Measured, type PersonBox, type Placement, type Rect,
 } from "./placement";
 
@@ -44,29 +44,38 @@ describe("mapBox: photo-normalized box to frame pixels", () => {
   });
 });
 
-describe("overlapOf: padded copy against people, faces weighted x4", () => {
-  const person: Rect = { x: 500, y: 100, w: 200, h: 400 }; // face band: y 100..240
-  it("no overlap outside the 24 px pad, overlap inside it", () => {
-    expect(overlapOf({ x: 100, y: 100, w: 375, h: 400 }, [person], PHOTO).area).toBe(0); // right edge 475 + 24 = 499
-    expect(overlapOf({ x: 100, y: 100, w: 380, h: 400 }, [person], PHOTO).area).toBeGreaterThan(0);
+describe("overlapOf: faces padded 40 px (hard), bodies padded 24 px (soft)", () => {
+  const person = { body: { x: 500, y: 100, w: 200, h: 400 }, face: { x: 560, y: 110, w: 80, h: 100 } };
+  it("bodies count inside the 24 px pad only", () => {
+    expect(overlapOf({ x: 100, y: 300, w: 375, h: 100 }, [person], PHOTO).body).toBe(0); // 475 + 24 = 499
+    expect(overlapOf({ x: 100, y: 300, w: 380, h: 100 }, [person], PHOTO).body).toBeGreaterThan(0);
   });
 
-  it("copy over the face scores four times copy over the body", () => {
-    const overFace = overlapOf({ x: 524, y: 124, w: 152, h: 20 }, [person], PHOTO); // padded: 500..700 x 100..168
-    const overLegs = overlapOf({ x: 524, y: 404, w: 152, h: 20 }, [person], PHOTO); // padded: 380..448, below the face
-    expect(overFace.area).toBeCloseTo(overLegs.area, 6);
-    expect(overFace.score).toBeCloseTo(4 * overFace.area, 6);
-    expect(overLegs.score).toBeCloseTo(overLegs.area, 6);
+  it("faces count inside the 40 px pad: closer than 40 px is contact", () => {
+    const near = overlapOf({ x: 100, y: 120, w: 421, h: 50 }, [person], PHOTO); // 521 + 40 = 561 > 560
+    expect(near.face).toBeGreaterThan(0);
+    const clear = overlapOf({ x: 100, y: 120, w: 419, h: 50 }, [person], PHOTO);
+    expect(clear.face).toBe(0);
+    expect(clear.body).toBeGreaterThan(0); // still on the body
   });
 
-  it("parts of a person outside the photo area do not count", () => {
-    const off: Rect = { x: -300, y: 100, w: 200, h: 400 };
-    expect(overlapOf({ x: -300, y: 100, w: 200, h: 400 }, [off], PHOTO).area).toBe(0);
+  it("score is face x 10 + body", () => {
+    const o = overlapOf({ x: 560, y: 110, w: 80, h: 100 }, [person], PHOTO);
+    expect(o.score).toBeCloseTo(10 * o.face + o.body, 6);
   });
 
-  it("faceCut is the share of face bands outside the photo area", () => {
-    expect(faceCut([{ x: 0, y: 96, w: 100, h: 100 }], PHOTO)).toBe(0);
-    expect(faceCut([{ x: -50, y: 96, w: 100, h: 100 }], PHOTO)).toBeCloseTo(0.5, 6);
+  it("without a face box the face is the top 35% of the body box", () => {
+    const [p] = peopleIn([{ box: [0, 0, 1000, 1000] }], { w: 1400, h: 782 }, PHOTO, "50% 50%");
+    expect(p.face.h).toBeCloseTo(782 * 0.35, 6);
+    const [q] = peopleIn([{ box: [0, 0, 1000, 1000], face: [100, 100, 200, 200] }], { w: 1400, h: 782 }, PHOTO, "50% 50%");
+    expect(q.face).toEqual({ x: expect.closeTo(140, 6), y: expect.closeTo(96 + 78.2, 6), w: expect.closeTo(140, 6), h: expect.closeTo(78.2, 6) });
+  });
+
+  it("parts of a person outside the photo area do not count, and faceCut measures them", () => {
+    const off = { body: { x: -300, y: 100, w: 200, h: 400 }, face: { x: -50, y: 100, w: 100, h: 100 } };
+    expect(overlapOf({ x: -300, y: 100, w: 200, h: 400 }, [off], PHOTO).body).toBe(0);
+    expect(faceCut([off], PHOTO)).toBeCloseTo(5000, 6);
+    expect(faceCut([person], PHOTO)).toBe(0);
   });
 });
 
@@ -111,8 +120,19 @@ describe("candidates", () => {
     const toRight = zoomFocus(boxes, n, PHOTO, "50% 40%", 1.5, "left");
     const toLeft = zoomFocus(boxes, n, PHOTO, "50% 40%", 1.5, "right");
     const cx = (f: string) => { const r = mapBox(boxes[0], n, PHOTO, f, 1.5); return r.x + r.w / 2; };
-    expect(cx(toRight)).toBeGreaterThan(cx("50% 40%") + 100);
-    expect(cx(toLeft)).toBeLessThan(cx("50% 40%") - 100);
+    expect(cx(toRight!)).toBeGreaterThan(cx("50% 40%") + 100);
+    expect(cx(toLeft!)).toBeLessThan(cx("50% 40%") - 100);
+  });
+
+  it("zoomFocus never pushes a face out of the photo area, and gives up when it must", () => {
+    const n = { w: 2000, h: 1200 };
+    const edge: PersonBox[] = [{ box: [0, 850, 500, 1000], face: [0, 900, 150, 1000] }]; // face at the right edge
+    const f = zoomFocus(edge, n, PHOTO, "50% 40%", 1.5, "left");
+    expect(f).not.toBeNull();
+    expect(faceCut(peopleIn(edge, n, PHOTO, f!, 1.5), PHOTO)).toBeLessThanOrEqual(0.5);
+    const huge: PersonBox[] = [{ box: [0, 0, 1000, 1000], face: [0, 0, 1000, 1000] }];
+    expect(zoomFocus(huge, n, PHOTO, "50% 40%", 1.25, "left")).toBeNull();
+    expect(candidates({ layout: "left", photo_focus: "50% 40%" }, huge, n, PHOTO, 700).some((p) => p.photo_zoom)).toBe(false);
   });
 });
 
@@ -145,6 +165,16 @@ describe("searchPlacement with a fake measure", () => {
     expect(f.calls).toHaveLength(4);
   });
 
+  it("a zoom that pushes a face out of the photo area is rejected even with no overlap", async () => {
+    const f = fake();
+    const edgeFace: PersonBox[] = [{ box: [0, 900, 300, 1000], face: [0, 950, 100, 1000] }]; // face at the right edge
+    const zoomed: Placement = { layout: "left", photo_focus: "0% 0%", photo_zoom: 2 }; // pushes the right edge out
+    const r = await searchPlacement(zoomed, edgeFace, f.measure);
+    expect(r.tried[0].rejected).toBe(true);
+    expect(r.tried[0].ok).toBe(false);
+    expect(r.chosen.placement.photo_zoom ?? 1).not.toBe(2);
+  });
+
   it("as written wins straight away when nobody is under the words", async () => {
     const f = fake();
     const r = await searchPlacement(base, [], f.measure);
@@ -159,6 +189,22 @@ describe("searchPlacement with a fake measure", () => {
     expect(f.calls).toEqual([base, { ...base, headline_glue: false }]);
   });
 
+  it("a word wider than the column shrinks the headline just enough (not below 0.6)", async () => {
+    // The headline needs 652 px at full size in a 640 px column, so fit = 640 / 652 at any width.
+    const f = fake((p) => {
+      const need = 652 * (p.headline_scale ?? 1), width = p.copy_width ?? 640;
+      return need > width ? { overflow: true, fit: width / need } : {};
+    });
+    const r = await searchPlacement(base, [], f.measure);
+    expect(r.chosen.measured.overflow).toBe(false);
+    expect(r.chosen.placement).toMatchObject({ layout: "left", headline_glue: false, headline_scale: 0.97 });
+    expect(f.calls).toHaveLength(3); // glued, unglued, shrunk
+
+    const g = fake((p) => ({ overflow: true, fit: 0.5 * (p.headline_scale ?? 1) })); // would need under 0.6
+    const r2 = await searchPlacement(base, [], g.measure);
+    expect(r2.tried.every((t) => (t.placement.headline_scale ?? 1) >= 0.6)).toBe(true);
+  });
+
   it("overflowing candidates are rejected even when they overlap nobody", async () => {
     const f = fake((p) => ({ overflow: !p.copy_width }));
     const r = await searchPlacement(base, [], f.measure);
@@ -166,16 +212,38 @@ describe("searchPlacement with a fake measure", () => {
     expect(r.chosen.measured.overflow).toBe(false);
   });
 
-  it("with no clean candidate, the least face-weighted overlap without overflow wins", async () => {
-    // Every candidate overlaps; the right side covers only the body (below the face band).
+  it("with no clean candidate, a face-free side layout beats a face-free center with less body overlap", async () => {
     const f = fake((p) => {
-      if (p.layout === "right" && !p.photo_zoom && p.copy_width === 420) return { copy: { x: 600, y: 300, w: 300, h: 150 } };
-      if (p.layout === "box") return { overflow: true, copy: { x: 1000, y: 700, w: 10, h: 10 } }; // no overlap, but overflows
-      return { copy: { x: 400, y: 100, w: 400, h: 300 } };
+      if (p.layout === "right" && !p.photo_zoom && p.copy_width === 420) return { copy: { x: 600, y: 300, w: 300, h: 150 } }; // body only
+      if (p.layout === "center") return { copy: { x: 600, y: 400, w: 20, h: 20 } }; // body only, tiny
+      if (p.layout === "box") return { overflow: true, copy: { x: 1000, y: 700, w: 10, h: 10 } }; // clear, but overflows
+      return { copy: { x: 400, y: 100, w: 400, h: 300 } }; // on the face
     });
     const r = await searchPlacement(base, PEOPLE, f.measure);
     expect(r.chosen.ok).toBe(false);
+    expect(r.chosen.face).toBe(0);
     expect(r.chosen.placement).toMatchObject({ layout: "right", copy_width: 420 });
-    expect(r.chosen.measured.overflow).toBe(false);
+  });
+
+});
+
+describe("fallback", () => {
+  const m = (overflow = false): Measured => ({ copy: { x: 0, y: 0, w: 1, h: 1 }, photo: PHOTO, overflow });
+  const t = (layout: Placement["layout"], face: number, overlap: number, extra: { overflow?: boolean; rejected?: boolean } = {}) => ({
+    placement: { layout, photo_focus: "50% 40%" }, measured: m(extra.overflow), face, overlap, score: 10 * face + overlap,
+    rejected: !!extra.rejected, ok: false,
+  });
+  it("prefers zero face contact over any score", () => {
+    expect(fallback([t("left", 10, 0), t("right", 0, 5000)]).placement.layout).toBe("right");
+  });
+  it("among face-free ones: sides first, then least body overlap", () => {
+    expect(fallback([t("center", 0, 10), t("left", 0, 900), t("right", 0, 400)]).placement.layout).toBe("right");
+    expect(fallback([t("center", 0, 10), t("box", 0, 5), t("left", 3, 0)]).placement.layout).toBe("box");
+  });
+  it("all touching faces: the lowest face x 10 + body", () => {
+    expect(fallback([t("left", 100, 0), t("right", 50, 400)]).placement.layout).toBe("right");
+  });
+  it("never picks a rejected zoom or an overflowing one when another exists", () => {
+    expect(fallback([t("left", 0, 0, { rejected: true }), t("right", 0, 0, { overflow: true }), t("center", 5, 5)]).placement.layout).toBe("center");
   });
 });

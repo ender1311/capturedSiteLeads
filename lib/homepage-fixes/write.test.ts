@@ -426,17 +426,27 @@ describe("lookCheck wording (Maggie, 2026-11-05)", () => {
 });
 
 describe("locatePeople", () => {
-  it("returns clamped head-to-waist boxes and the call's usage", async () => {
+  it("returns clamped body and face boxes and the call's usage", async () => {
     const m = mock({
-      json: { people: [{ box_2d: [100, 200, 600, 400] }, { box_2d: [-5, 500, 1200, 700] }, { box_2d: [10, 20, 30] }, { box_2d: [500, 500, 400, 600] }] },
+      json: { people: [
+        { face_2d: [120, 250, 250, 350], body_2d: [100, 200, 600, 400] },
+        { face_2d: [10, 20, 30], body_2d: [-5, 500, 1200, 700] }, // bad face: body only
+        { face_2d: [100, 100, 200, 200], body_2d: [500, 500, 400, 600] }, // bad body: the face stands in
+        { face_2d: [1, 2], body_2d: [3] }, // nothing usable
+      ] },
       input: 400, output: 60,
     });
     const r = await locatePeople(Buffer.from([1, 2, 3]), "image/webp", m);
-    expect(r.boxes).toEqual([{ box: [100, 200, 600, 400] }, { box: [0, 500, 1000, 700] }]);
+    expect(r.boxes).toEqual([
+      { box: [100, 200, 600, 400], face: [120, 250, 250, 350] },
+      { box: [0, 500, 1000, 700] },
+      { box: [100, 100, 200, 200], face: [100, 100, 200, 200] },
+    ]);
     expect(r.usage).toMatchObject({ inputTokens: 400, outputTokens: 60, calls: 1 });
     expect(r.usage.costUsd).toBeCloseTo(costOf({ inputTokens: 400, outputTokens: 60 }, MODEL), 12);
     expect(thinking(m, 0)).toBe("low");
     const prompt = promptText(m);
+    expect(prompt).toContain("face_2d: the face alone");
     expect(prompt).toContain("top of the head down to the waist");
     const file = (m.doGenerateCalls[0].prompt[0].content as { type: string; mediaType?: string }[]).find((c) => c.type === "file");
     expect(file?.mediaType).toBe("image/webp");
