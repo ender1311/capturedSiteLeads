@@ -14,7 +14,7 @@ import { Firecrawl } from "@mendable/firecrawl-js";
 import { captureSite, CaptureError } from "@/lib/homepage-fixes/capture";
 import { buildFacts, type Facts } from "@/lib/homepage-fixes/facts";
 import { photoKey, runHomepageFixes, type PipelineResult } from "@/lib/homepage-fixes/pipeline";
-import { renderAfter, renderContactSheet } from "@/lib/homepage-fixes/render";
+import { placeAfter, renderContactSheet } from "@/lib/homepage-fixes/render";
 import type { Asset, Capture } from "@/lib/homepage-fixes/types";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -173,6 +173,7 @@ async function main() {
   write("facts.txt", factsText(facts, capture));
   let lastAfter: Buffer | undefined;
   let afterRenders = 0;
+  const placements: unknown[] = [];
   let r: PipelineResult;
   try {
     r = await runHomepageFixes(
@@ -183,10 +184,12 @@ async function main() {
           write("contact.jpg", sheet);
           return sheet;
         },
-        renderAfter: async (section, photo, logo) => {
-          lastAfter = await renderAfter(section, photo, logo);
+        placeAfter: async (section, photo, logo, boxes) => {
+          const placed = await placeAfter(section, photo, logo, boxes);
+          lastAfter = placed.image;
           write(afterRenders++ ? `after-${afterRenders}.jpg` : "after.jpg", lastAfter);
-          return lastAfter;
+          placements.push({ boxes, placement: placed.placement, overlap: Math.round(placed.overlap), clean: placed.clean, tried: placed.tried });
+          return placed;
         },
       },
     );
@@ -210,7 +213,7 @@ async function main() {
     ...("reason" in r ? { reason: r.reason } : {}),
     ...(r.outcome === "held" ? { issues: r.issues } : {}),
     ...("model" in r ? { model: r.model } : {}),
-    usage: r.usage, costUsd: +r.usage.costUsd.toFixed(5), afterRenders,
+    usage: r.usage, costUsd: +r.usage.costUsd.toFixed(5), afterRenders, placements,
     firecrawlCredits, captureSeconds, elapsedSeconds: elapsed(),
   };
   write("result.json", JSON.stringify(result, null, 1));

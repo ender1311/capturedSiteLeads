@@ -21,6 +21,7 @@ const browser = vi.hoisted(() => {
 vi.mock("@/lib/pdf", () => ({ getBrowser: browser.getBrowser }));
 import { FALLBACK_COMPLIMENT, OutOfTimeError, WRITE_MIN_MS, runHomepageFixes, type Stages } from "./pipeline";
 import { checkText, type RuleIssue } from "./rules";
+import type { PersonBox } from "./placement";
 import type { Capture, FirstSection, PageData, ReportContent, Usage } from "./types";
 import type { Written } from "./write";
 
@@ -84,7 +85,8 @@ const REPORT: Extract<Written, { fit: "report" }> = {
   notes_for_maggie: "Headline built from the intro.",
 };
 
-type Calls = { renderAfter: { s: FirstSection; photo: string; logo?: string }[] };
+type Calls = { renderAfter: { s: FirstSection; photo: string; logo?: string; boxes?: PersonBox[] }[] };
+const BOXES: PersonBox[] = [{ box: [100, 400, 600, 600] }];
 
 function fakes(over: Partial<Stages> = {}, cap = capture()): { stages: Partial<Stages>; calls: Calls; spies: Record<string, ReturnType<typeof vi.fn>> } {
   const calls: Calls = { renderAfter: [] };
@@ -93,14 +95,22 @@ function fakes(over: Partial<Stages> = {}, cap = capture()): { stages: Partial<S
     write: vi.fn(async () => ({ written: structuredClone(REPORT) as Written, usage: usage(3000, 700, 0.005) })),
     repair: vi.fn(async ({ content }: { content: ReportContent; issues: RuleIssue[] }) => ({ content, usage: usage(400, 100, 0.0007) })),
     look: vi.fn(async () => ({ ok: true, faces_ok: true, headline_readable: true, looks_like_template: false, usage: usage(350, 40, 0.0004) })),
-    renderAfter: vi.fn(async (s: FirstSection, photo: string, logo?: string) => {
-      calls.renderAfter.push({ s: structuredClone(s), photo, logo });
-      return Buffer.from(`after-${calls.renderAfter.length}`);
+    locate: vi.fn(async () => ({ boxes: structuredClone(BOXES), usage: usage(300, 30, 0.0003) })),
+    // The fake placement moves the words to the right and shrinks them, so the stored section can be checked.
+    renderAfter: vi.fn(async (s: FirstSection, photo: string, logo?: string, boxes?: PersonBox[]) => {
+      calls.renderAfter.push({ s: structuredClone(s), photo, logo, boxes });
+      const section = { ...s, layout: "right" as const, headline_scale: 0.85, copy_width: 480 };
+      return {
+        image: Buffer.from(`after-${calls.renderAfter.length}`), section,
+        placement: { layout: "right" as const, photo_focus: s.photo_focus, headline_scale: 0.85, copy_width: 480 },
+        overlap: 0, score: 0, clean: true, tried: [],
+      };
     }),
     renderPdf: vi.fn(async () => ({ pdf: Buffer.from("%PDF"), overflow: [] as { page: number; hits: string[] }[] })),
     renderContactSheet: vi.fn(async () => Buffer.from("contact")),
   };
-  return { stages: { ...(spies as unknown as Stages), ...over }, calls, spies };
+  const { renderAfter: placeAfter, ...rest } = spies;
+  return { stages: { ...(rest as unknown as Stages), placeAfter: placeAfter as unknown as Stages["placeAfter"], ...over }, calls, spies };
 }
 
 const INPUT = { firstName: "Jane", website: "janedoe.com", goal: "More inquiries from couples" };
@@ -165,8 +175,9 @@ describe("runHomepageFixes", () => {
     const r = await runHomepageFixes(INPUT, stages);
     if (r.outcome !== "sent") throw new Error(`expected sent, got ${r.outcome}`);
     const fs = r.content.first_section;
+    // The stored section is the one the placement rendered.
     expect(fs).toMatchObject({
-      photo: "photos/photo-02.webp", photo_focus: "50% 35%", layout: "left",
+      photo: "photos/photo-02.webp", photo_focus: "50% 35%", layout: "right", headline_scale: 0.85, copy_width: 480,
       headline: REPORT.headline, subline: REPORT.subline, button: "Reach Out",
       nav_items: ["Home", "About", "Contact"], nav_position: "top", nav_style: "bar", logo_image: "logo.png",
     });
@@ -174,6 +185,7 @@ describe("runHomepageFixes", () => {
     expect(r.content).toMatchObject({ first_name: "Jane", website: "janedoe.com", goal: "More inquiries from couples" });
     expect(r.content.first_section_changes).toEqual(REPORT.first_section_changes);
     expect(r.content.fixes).toEqual(REPORT.fixes);
+    expect(calls.renderAfter[0].s).toMatchObject({ layout: "left", photo_focus: "50% 35%" });
     expect(calls.renderAfter[0].photo).toBe(uri(PHOTO2, "image/webp"));
     expect(calls.renderAfter[0].logo).toBe(uri(Buffer.from("logo"), "image/png"));
     expect(r.after).toEqual(Buffer.from("after-1"));
@@ -227,29 +239,39 @@ describe("runHomepageFixes", () => {
     if (r.outcome === "sent") expect(r.content.first_section.subline).toBe("Family photographer, in the city!");
   });
 
-  it("look check failure re-renders with alt settings, then next photo, then sends the best render with a warning (gate defect 3)", async () => {
+  it("locates the people in the chosen photo and passes the boxes to the placement", async () => {
+    const { stages, calls, spies } = fakes();
+    const r = await runHomepageFixes({ ...INPUT, model: "google/gemini-3.5-flash-lite" }, stages);
+    expect(r.outcome).toBe("sent");
+    expect(spies.locate).toHaveBeenCalledTimes(1);
+    expect(spies.locate).toHaveBeenCalledWith(PHOTO1, "image/jpeg", "google/gemini-3.5-flash-lite");
+    expect(calls.renderAfter).toHaveLength(1);
+    expect(calls.renderAfter[0].boxes).toEqual(BOXES);
+  });
+
+  it("look check failure tries the next photo (located again, no alt-layout retry), then sends the best render with a warning (gate defect 3)", async () => {
     const fail = (faces_ok: boolean, headline_readable: boolean) => ({ ok: false, faces_ok, headline_readable, looks_like_template: false, usage: usage(1, 1, 0) });
     const look = vi.fn()
-      .mockResolvedValueOnce(fail(false, false)) // two problems
       .mockResolvedValueOnce(fail(false, true)) // one problem: the best
       .mockResolvedValueOnce(fail(false, false));
     const { stages, calls, spies } = fakes({ look });
     const r = await runHomepageFixes(INPUT, stages);
-    expect(calls.renderAfter).toHaveLength(3);
-    expect(look).toHaveBeenCalledTimes(3);
+    expect(calls.renderAfter).toHaveLength(2);
+    expect(look).toHaveBeenCalledTimes(2);
+    expect(spies.locate).toHaveBeenCalledTimes(2);
+    expect(spies.locate.mock.calls[1]).toEqual([PHOTO2, "image/webp", "google/gemini-3.8-flash"]);
     expect(calls.renderAfter[0].s).toMatchObject({ layout: "left", photo_focus: "50% 35%", photo: "photos/photo-01.jpg" });
     expect(calls.renderAfter[0].photo).toBe(uri(PHOTO1, "image/jpeg"));
-    expect(calls.renderAfter[1].s).toMatchObject({ layout: "center", photo_focus: "50% 20%", photo: "photos/photo-01.jpg" });
-    expect(calls.renderAfter[2].s).toMatchObject({ photo_focus: "50% 40%", photo: "photos/photo-02.webp" });
-    expect(calls.renderAfter[2].photo).toBe(uri(PHOTO2, "image/webp"));
+    expect(calls.renderAfter[1].s).toMatchObject({ layout: "left", photo_focus: "50% 40%", photo: "photos/photo-02.webp" });
+    expect(calls.renderAfter[1].photo).toBe(uri(PHOTO2, "image/webp"));
     expect(r.outcome).toBe("sent");
     if (r.outcome !== "sent") return;
-    expect(r.after).toEqual(Buffer.from("after-2"));
-    expect(r.content.first_section).toMatchObject({ layout: "center", photo_focus: "50% 20%", photo: "photos/photo-01.jpg" });
+    expect(r.after).toEqual(Buffer.from("after-1"));
+    expect(r.content.first_section).toMatchObject({ layout: "right", photo_focus: "50% 35%", photo: "photos/photo-01.jpg", copy_width: 480 });
     expect(r.content.notes_for_maggie).toContain("Mockup photo check flagged: look check: a face is cut off or covered.");
     expect(r.content.notes_for_maggie).toContain(REPORT.notes_for_maggie);
     expect(spies.renderPdf).toHaveBeenCalledTimes(1);
-    expect((spies.renderPdf.mock.calls[0][0] as string)).toContain(uri(Buffer.from("after-2"), "image/jpeg"));
+    expect((spies.renderPdf.mock.calls[0][0] as string)).toContain(uri(Buffer.from("after-1"), "image/jpeg"));
   });
 
   it("ties on look-check problems go to the last render", async () => {
@@ -257,7 +279,7 @@ describe("runHomepageFixes", () => {
     const { stages } = fakes({ look });
     const r = await runHomepageFixes(INPUT, stages);
     expect(r.outcome).toBe("sent");
-    if (r.outcome === "sent") expect(r.after).toEqual(Buffer.from("after-3"));
+    if (r.outcome === "sent") expect(r.after).toEqual(Buffer.from("after-2"));
   });
 
   it("copy rule errors still hold, whatever the look check says", async () => {
@@ -268,7 +290,7 @@ describe("runHomepageFixes", () => {
     expect(r).toMatchObject({ outcome: "held", reason: "rule check failed after one repair" });
   });
 
-  it("look check passing on the alt settings keeps them", async () => {
+  it("look check passing on the next photo keeps it", async () => {
     const look = vi.fn()
       .mockResolvedValueOnce({ ok: false, faces_ok: true, headline_readable: false, looks_like_template: false, usage: usage(1, 1, 0) })
       .mockResolvedValueOnce({ ok: true, faces_ok: true, headline_readable: true, looks_like_template: false, usage: usage(1, 1, 0) });
@@ -277,18 +299,27 @@ describe("runHomepageFixes", () => {
     expect(calls.renderAfter).toHaveLength(2);
     expect(r.outcome).toBe("sent");
     if (r.outcome === "sent") {
-      expect(r.content.first_section).toMatchObject({ layout: "center", photo_focus: "50% 20%" });
+      expect(r.content.first_section).toMatchObject({ photo: "photos/photo-02.webp", photo_focus: "50% 40%", layout: "right" });
+      expect(r.content.notes_for_maggie).not.toContain("Mockup photo check flagged");
       expect(r.after).toEqual(Buffer.from("after-2"));
     }
   });
 
-  it("look check with only one photo stops after the alt settings", async () => {
+  it("look check with only one photo sends the one render with a warning", async () => {
     const look = vi.fn(async () => ({ ok: false, faces_ok: false, headline_readable: true, looks_like_template: false, usage: usage(1, 1, 0) }));
     const { stages, calls } = fakes({ look }, capture({}, 1));
     const r = await runHomepageFixes(INPUT, stages);
-    expect(calls.renderAfter).toHaveLength(2);
+    expect(calls.renderAfter).toHaveLength(1);
     expect(r.outcome).toBe("sent"); // gate defect 3: the best render goes out, flagged for Maggie
     if (r.outcome === "sent") expect(r.content.notes_for_maggie).toMatch(/Mockup photo check flagged: look check: a face is cut off/);
+  });
+
+  it("a locate call that finds nobody still renders and sends", async () => {
+    const locate = vi.fn(async () => ({ boxes: [] as PersonBox[], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 } }));
+    const { stages, calls } = fakes({ locate });
+    const r = await runHomepageFixes(INPUT, stages);
+    expect(r.outcome).toBe("sent");
+    expect(calls.renderAfter[0].boxes).toEqual([]);
   });
 
   it("overflow triggers one repair asking to shorten the overflowing field, then held if still overflowing", async () => {
@@ -338,10 +369,11 @@ describe("runHomepageFixes", () => {
     const { stages } = fakes({ write: vi.fn(async () => ({ written: bad as Written, usage: { ...usage(3000, 700, 0.005), calls: 2 } })), repair, look });
     const r = await runHomepageFixes(INPUT, stages);
     expect(r.outcome).toBe("sent");
-    expect(r.usage.inputTokens).toBe(3000 + 400 + 350 + 350);
-    expect(r.usage.outputTokens).toBe(700 + 100 + 40 + 40);
-    expect(r.usage.calls).toBe(2 + 1 + 1 + 1);
-    expect(r.usage.costUsd).toBeCloseTo(0.005 + 0.0007 + 0.0004 + 0.0004, 10);
+    // write (2 calls), repair, then locate + look on photo 1 and again on photo 2.
+    expect(r.usage.inputTokens).toBe(3000 + 400 + 2 * (300 + 350));
+    expect(r.usage.outputTokens).toBe(700 + 100 + 2 * (30 + 40));
+    expect(r.usage.calls).toBe(2 + 1 + 2 * (1 + 1));
+    expect(r.usage.costUsd).toBeCloseTo(0.005 + 0.0007 + 2 * (0.0003 + 0.0004), 10);
   });
 
   describe("deadline", () => {

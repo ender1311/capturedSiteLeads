@@ -5,6 +5,7 @@ import type { Facts } from "./facts";
 import { resolveModel } from "./model";
 import { clampPhotos, SYSTEM_PROMPT, userMessage } from "./prompt";
 import { fieldsOf, LIMITS, type RuleIssue } from "./rules";
+import type { PersonBox } from "./placement";
 import type { Fix, Layout, ReportContent, Usage } from "./types";
 
 // The one judgment step: Gemini writes the diagnosis and copy, fixes failing fields, and checks
@@ -353,7 +354,7 @@ export async function repairFields(input: {
 const lookSchema = z.object({ faces_ok: z.boolean(), headline_readable: z.boolean(), looks_like_template: z.boolean() });
 
 const LOOK_PROMPT = `This is a mockup of a photographer's new homepage first section. Answer three yes/no questions:
-faces_ok: Are all faces fully in frame, none cut off by the edges or covered by the words? (true if there are no faces)
+faces_ok: No words (headline, line under it, or button) sit on any person's face or upper body, and no face is cut off by the edges. Words over legs, the lower part of the photo, or someone turned away are fine. True if there are no people.
 headline_readable: Is the headline easy to read against the photo?
 looks_like_template: Does it look like a generic template rather than the photographer's own site?`;
 
@@ -377,4 +378,45 @@ export async function lookCheck(after: Buffer, model: ModelArg = DEFAULT_MODEL):
   }));
   const o = r.object;
   return { ...o, ok: o.faces_ok && o.headline_readable && !o.looks_like_template, usage: usageOf(r, model) };
+}
+
+// ---------- people boxes ----------
+
+const peopleSchema = z.object({ people: z.array(z.object({ box_2d: z.array(z.number()) })) });
+
+const PEOPLE_PROMPT = `Find every visible person in this photo. For each one, give box_2d as [ymin, xmin, ymax, xmax], each 0 to 1000 relative to the image, covering the head and upper body: from the top of the head down to the waist. People turned fully away from the camera and tiny people far in the background may be left out. An empty list if there are no people.`;
+
+/** A box Gemini returned, made safe: four numbers, clamped to 0..1000, with a real area. */
+function cleanBox(b: number[]): PersonBox | null {
+  if (b.length !== 4 || !b.every((n) => Number.isFinite(n))) return null;
+  const [ymin, xmin, ymax, xmax] = b.map((n) => Math.min(1000, Math.max(0, n)));
+  return ymax > ymin && xmax > xmin ? { box: [ymin, xmin, ymax, xmax] } : null;
+}
+
+/**
+ * Where the people are in a photo (head to waist), so the mockup's words can stay off them.
+ * Never throws: on any failure the boxes are empty and the mockup is placed as before.
+ */
+export async function locatePeople(photo: Buffer, mime: string, model: ModelArg = DEFAULT_MODEL): Promise<{ boxes: PersonBox[]; usage: Usage }> {
+  try {
+    const r = await withRateLimitRetry(() => generateObject({
+      model: resolveModel(model),
+      maxRetries: 0,
+      abortSignal: callSignal(),
+      schema: peopleSchema,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "text", text: PEOPLE_PROMPT },
+          { type: "file", data: photo, mediaType: mime },
+        ],
+      }],
+      maxOutputTokens: 1000,
+      providerOptions: providerOptions("low"),
+    }));
+    const boxes = r.object.people.map((p) => cleanBox(p.box_2d)).filter((b): b is PersonBox => b !== null).slice(0, 12);
+    return { boxes, usage: usageOf(r, model) };
+  } catch {
+    return { boxes: [], usage: { ...ZERO } };
+  }
 }
