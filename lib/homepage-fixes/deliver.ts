@@ -115,7 +115,9 @@ async function upsertSubscriber(lead: DeliverLead, outcome: HfOutcome, extra: {
   fields.hf_outcome = outcome;
   fields.hf_sent_date = outcome === "sent" ? new Date().toISOString().slice(0, 10) : "";
   try {
-    await addSubscriber({ name: lead.name, email: lead.email, siteUrl: lead.siteUrl, pdfUrl: extra.pdfUrl, fields });
+    // Only a sent report joins "Homepage Fixes delivered": Maggie's follow-up automation starts there.
+    const extraGroups = outcome === "sent" ? [process.env.MAILERLITE_HF_DELIVERED_GROUP_ID] : [];
+    await addSubscriber({ name: lead.name, email: lead.email, siteUrl: lead.siteUrl, pdfUrl: extra.pdfUrl, fields, extraGroups });
   } catch (err) {
     console.warn("MailerLite subscriber upsert failed:", (err as Error).message);
   }

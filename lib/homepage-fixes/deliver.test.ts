@@ -34,6 +34,7 @@ beforeEach(() => {
   vi.stubEnv("RESEND_FROM", "");
   vi.stubEnv("MAILERLITE_API_KEY", "ml_test");
   vi.stubEnv("MAILERLITE_GROUP_ID", "group-123");
+  vi.stubEnv("MAILERLITE_HF_DELIVERED_GROUP_ID", "group-delivered");
   vi.stubEnv("ALERT_EMAILS", "");
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -120,7 +121,7 @@ describe("deliver", () => {
 
     const [sub] = ml("/subscribers");
     expect(sub.body!.email).toBe("jane@example.com");
-    expect(sub.body!.groups).toEqual(["group-123"]);
+    expect(sub.body!.groups).toEqual(["group-123", "group-delivered"]);
     expect(sub.body!.fields).toEqual({
       name: "Jane", site_url: "https://janedoe.com", pdf_url: `https://blob.test/${paths[0]}`,
       goal: "more family sessions", hf_outcome: "sent", hf_headline: "Family photos that feel like home",
@@ -206,6 +207,8 @@ describe("deliver", () => {
     expect(email.body!.attachments).toBeUndefined();
     const fields = ml("/subscribers")[0].body!.fields as Record<string, string>;
     expect(fields).toEqual({ name: "Jane", site_url: "https://janedoe.com", goal: "more family sessions", hf_outcome: "hobby", hf_sent_date: "" });
+    // Only a sent report joins the "delivered" group that starts Maggie's follow-ups.
+    expect(ml("/subscribers")[0].body!.groups).toEqual(["group-123"]);
     expect(lastUpdate()).toMatchObject({ outcome: "hobby", cost_usd: 0.0064 });
   });
 
