@@ -4,6 +4,7 @@ import { capRemaining, checkDailyLimits, normalizeEmail, visitorIp, type RateChe
 import { getLiveModel } from "@/lib/guide-store";
 import { authorized, parseBody } from "@/lib/lead-intake";
 import { leadEmail, leadName, leadSiteUrl } from "@/lib/lead-fields";
+import { addToNeverReceived } from "@/lib/mailerlite";
 import { pickModel } from "@/lib/models";
 import { captureSite } from "./capture";
 import {
@@ -48,6 +49,7 @@ const intakeSchema = z.object({
 const firstWord = (name: string) => name.trim().split(/\s+/)[0] ?? "";
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+const looksLikeEmail = (v: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
 const ok = (body: Record<string, unknown>) => NextResponse.json(body); // always 200: Elementor treats anything else as failure
 
 /** Today's date in Eastern time, the "day" of the once-a-day cap alert. */
@@ -78,6 +80,9 @@ export async function handleHomepageFixes(req: NextRequest): Promise<NextRespons
         goal: str(raw.goal), ip, outcome: "invalid",
       });
       await updateHfLead(id, { outcome: "invalid", error: `invalid payload: ${fields}` });
+      // No report is coming: keep Maggie's follow-ups away (only when the email is usable).
+      const email = str(raw.email);
+      if (looksLikeEmail(email)) await addToNeverReceived({ name: str(raw.name), email: normalizeEmail(email) });
       return ok({ id, status: "invalid" });
     } catch (e) {
       console.error("Homepage fixes: could not record an invalid payload:", errText(e));
@@ -134,6 +139,7 @@ async function triage(
   if (!emailCheck.ok || !siteCheck.ok) {
     const why = [!emailCheck.ok && `email: ${emailCheck.code}`, !siteCheck.ok && `website: ${siteCheck.code}`].filter(Boolean);
     await updateHfLead(id, { outcome: "invalid", error: why.join("; ") });
+    if (looksLikeEmail(lead.email)) await addToNeverReceived(lead);
     return "invalid";
   }
 
@@ -155,6 +161,7 @@ async function triage(
       error: earlier ? `${limit.reason}; re-sent the report from lead ${earlier.id}` : limit.reason,
     });
     if (earlier) await resendEarlier(id, lead, earlier, "limited");
+    else await addToNeverReceived(lead); // nothing to re-send: no report is coming
     return "limited";
   }
 
@@ -210,6 +217,7 @@ async function resendEarlier(
     const error = `re-sending the earlier report failed: ${errText(e)}`;
     console.error(`Homepage fixes lead ${id}: ${error}`);
     await updateHfLead(id, kind === "dedupe" ? { outcome: "failed", error } : { error }).catch(() => {});
+    await addToNeverReceived(lead); // the re-send never went out: no report is coming
     await sendAlert("failed", { id, name: lead.name, email: lead.email, site_url: lead.siteUrl, error });
     return;
   }

@@ -48,6 +48,46 @@ export async function addSubscriber(input: {
   });
 }
 
+/** The "Homepage Fixes: never received" group id; empty when unset (all never-received logic is then a no-op). */
+export function neverReceivedGroupId(): string | undefined {
+  const id = process.env.MAILERLITE_HF_NEVER_RECEIVED_GROUP_ID?.trim();
+  return id ? id : undefined;
+}
+
+// Maggie's follow-up automation waits 2 days, then skips anyone in this group: they will not get a
+// report, so they must not get the follow-ups either. The upsert adds the group and keeps the others.
+// Never throws: a MailerLite error must not block emails, row updates or retries.
+export async function addToNeverReceived(input: { name: string; email: string }): Promise<void> {
+  const groupId = neverReceivedGroupId();
+  if (!groupId) return;
+  try {
+    await ml("/subscribers", {
+      method: "POST",
+      body: JSON.stringify({ email: input.email, fields: { name: input.name }, groups: [groupId] }),
+    });
+  } catch (err) {
+    console.warn("MailerLite never-received group add failed:", (err as Error).message);
+  }
+}
+
+// A held report that finally goes out: the person is no longer a never-received. A 404 (not in the
+// group, or no such subscriber) is fine. Never throws.
+export async function removeFromNeverReceived(email: string): Promise<void> {
+  const groupId = neverReceivedGroupId();
+  if (!groupId) return;
+  try {
+    const found = await fetch(`${API_BASE}/subscribers/${encodeURIComponent(email)}`, { headers: headers() });
+    if (found.status === 404) return;
+    if (!found.ok) throw new Error(`MailerLite GET subscriber failed (${found.status})`);
+    const subscriberId = (await found.json()).data?.id as string | undefined;
+    if (!subscriberId) return;
+    const res = await fetch(`${API_BASE}/subscribers/${subscriberId}/groups/${groupId}`, { method: "DELETE", headers: headers() });
+    if (!res.ok && res.status !== 404) throw new Error(`MailerLite DELETE group failed (${res.status})`);
+  } catch (err) {
+    console.warn("MailerLite never-received group removal failed:", (err as Error).message);
+  }
+}
+
 const UNSUBSCRIBE_FOOTER =
   `<p style="margin-top:24px;font-size:12px;color:#9db6b5;text-align:center"><a href="{$unsubscribe}" style="color:#9db6b5">Unsubscribe</a></p>`;
 

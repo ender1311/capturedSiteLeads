@@ -205,6 +205,7 @@ beforeEach(() => {
   vi.stubEnv("RESEND_FROM", "");
   vi.stubEnv("MAILERLITE_API_KEY", "ml_test");
   vi.stubEnv("MAILERLITE_GROUP_ID", "group-123");
+  vi.stubEnv("MAILERLITE_HF_NEVER_RECEIVED_GROUP_ID", "group-never");
   vi.stubEnv("ALERT_EMAILS", "dan@test.com");
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -705,5 +706,85 @@ describe("sweep and the cron route", () => {
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ queued: 1, retried: 0 });
     expect(h.deliver.mock.calls[0][0]).toBe(q);
+  });
+});
+
+describe("never-received group", () => {
+  const neverCalls = () =>
+    mailerlite().filter((c) => c.url.endsWith("/subscribers") && (c.body?.groups as string[] | undefined)?.includes("group-never"));
+
+  it("server-side invalid (email or site) joins it", async () => {
+    h.checkEmail.mockResolvedValue({ ok: false, code: "no_mail", message: "m" });
+    await postAndSettle(JANE);
+    expect(neverCalls()).toHaveLength(1);
+    expect(neverCalls()[0].body).toEqual({ email: "jane@example.com", fields: { name: "Jane" }, groups: ["group-never"] });
+  });
+
+  it("an invalid payload joins it only when the email looks like an email", async () => {
+    await hfPOST(jsonPost({ name: "Jane", email: "jane@example.com" })); // no site_url
+    expect(neverCalls()).toHaveLength(1);
+    await hfPOST(jsonPost({ name: "Jane", email: "not-an-email", site_url: "janedoe.com" }));
+    expect(neverCalls()).toHaveLength(1);
+  });
+
+  it("limited with no earlier report joins it", async () => {
+    for (const site of ["a.com", "b.com", "c.com"]) seed({ outcome: "cant_see", site_url: `https://${site}` });
+    expect((await postAndSettle(JANE)).outcome).toBe("limited");
+    expect(neverCalls()).toHaveLength(1);
+  });
+
+  it("limited with an earlier report re-sent does not", async () => {
+    seed({ outcome: "sent", pdf_url: "https://blob.test/p/your-top-homepage-fixes-jane.pdf" });
+    seed({ outcome: "cant_see", site_url: "https://b.com" });
+    seed({ outcome: "cant_see", site_url: "https://c.com" });
+    await postAndSettle(JANE);
+    expect(toPhotographer("jane@example.com")).toHaveLength(1);
+    expect(neverCalls()).toHaveLength(0);
+  });
+
+  it("a dedupe re-send does not", async () => {
+    seed({ outcome: "sent", pdf_url: "https://blob.test/p/your-top-homepage-fixes-jane.pdf" });
+    await postAndSettle(JANE);
+    expect(toPhotographer("jane@example.com")).toHaveLength(1);
+    expect(neverCalls()).toHaveLength(0);
+  });
+
+  it("the twin (concurrent duplicate) stop does not", async () => {
+    seed({ outcome: "processing", started_minutes_ago: 1 });
+    expect((await postAndSettle(JANE)).outcome).toBe("limited");
+    expect(neverCalls()).toHaveLength(0);
+  });
+
+  it("queued does not", async () => {
+    vi.stubEnv("HOMEPAGE_FIXES_DAILY_CAP", "1");
+    seed({ outcome: "sent", site_url: "https://other.com", email: "x@example.com" });
+    expect((await postAndSettle(JANE)).outcome).toBe("queued");
+    expect(neverCalls()).toHaveLength(0);
+  });
+
+  it("a failed re-send of an earlier report joins it", async () => {
+    seed({ outcome: "sent", pdf_url: "https://blob.test/p/your-top-homepage-fixes-jane.pdf" });
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      sent.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
+      if (url.startsWith("https://api.resend.com")) return new Response("boom", { status: 500 });
+      if (url.startsWith("https://connect.mailerlite.com")) return new Response("boom", { status: 500 });
+      return new Response(new Uint8Array(PDF_BYTES), { status: 200 });
+    }));
+    expect((await postAndSettle(JANE)).outcome).toBe("failed");
+    expect(neverCalls().length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("unset env: no never-received call", async () => {
+    vi.stubEnv("MAILERLITE_HF_NEVER_RECEIVED_GROUP_ID", "");
+    h.checkEmail.mockResolvedValue({ ok: false, code: "no_mail", message: "m" });
+    await postAndSettle(JANE);
+    expect(mailerlite()).toHaveLength(0);
+  });
+
+  it("a MailerLite 500 does not stop the row from ending invalid", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("boom", { status: 500 })));
+    h.checkEmail.mockResolvedValue({ ok: false, code: "no_mail", message: "m" });
+    expect((await postAndSettle(JANE)).outcome).toBe("invalid");
   });
 });

@@ -1,3 +1,4 @@
+import { removeFromNeverReceived } from "@/lib/mailerlite";
 import { DeliveredNotRecordedError, deliver } from "./deliver";
 import { buildFacts } from "./facts";
 import { overflowIssues } from "./pipeline";
@@ -145,10 +146,15 @@ async function run(row: HfLeadRow, opts: RedeliverOptions & { claimed: boolean }
       });
     } catch (e) {
       // The photographer has the email: the row must never go back to held.
-      if (e instanceof DeliveredNotRecordedError) holding = false;
+      if (e instanceof DeliveredNotRecordedError) {
+        holding = false;
+        await removeFromNeverReceived(row.email);
+      }
       throw e;
     }
     holding = false;
+    // Held put them in "never received"; the report has now gone out.
+    await removeFromNeverReceived(row.email);
     log(`Sent to ${row.email}.`);
     return { status: "sent", issues };
   } catch (e) {

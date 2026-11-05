@@ -34,7 +34,7 @@ beforeEach(() => {
   vi.stubEnv("RESEND_FROM", "");
   vi.stubEnv("MAILERLITE_API_KEY", "ml_test");
   vi.stubEnv("MAILERLITE_GROUP_ID", "group-123");
-  vi.stubEnv("MAILERLITE_HF_DELIVERED_GROUP_ID", "group-delivered");
+  vi.stubEnv("MAILERLITE_HF_NEVER_RECEIVED_GROUP_ID", "group-never");
   vi.stubEnv("ALERT_EMAILS", "");
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -121,7 +121,7 @@ describe("deliver", () => {
 
     const [sub] = ml("/subscribers");
     expect(sub.body!.email).toBe("jane@example.com");
-    expect(sub.body!.groups).toEqual(["group-123", "group-delivered"]);
+    expect(sub.body!.groups).toEqual(["group-123"]);
     expect(sub.body!.fields).toEqual({
       name: "Jane", site_url: "https://janedoe.com", pdf_url: `https://blob.test/${paths[0]}`,
       goal: "more family sessions", hf_outcome: "sent", hf_headline: "Family photos that feel like home",
@@ -181,7 +181,8 @@ describe("deliver", () => {
     expect(String(alert.subject)).toBe("[Homepage Fixes] held: Jane (https://janedoe.com)");
     expect(String(alert.text)).toContain("lead-9");
     expect(String(alert.text)).toContain("look check failed");
-    expect(ml("/subscribers")).toHaveLength(0);
+    // Only the never-received join, no report upsert.
+    expect(ml("/subscribers").every((c) => !("site_url" in ((c.body!.fields as object) ?? {})))).toBe(true);
     expect(h.put).not.toHaveBeenCalled();
     const u = lastUpdate();
     expect(u.outcome).toBe("held");
@@ -207,8 +208,7 @@ describe("deliver", () => {
     expect(email.body!.attachments).toBeUndefined();
     const fields = ml("/subscribers")[0].body!.fields as Record<string, string>;
     expect(fields).toEqual({ name: "Jane", site_url: "https://janedoe.com", goal: "more family sessions", hf_outcome: "hobby", hf_sent_date: "" });
-    // Only a sent report joins the "delivered" group that starts Maggie's follow-ups.
-    expect(ml("/subscribers")[0].body!.groups).toEqual(["group-123"]);
+    expect(ml("/subscribers")[0].body!.groups).toEqual(["group-123", "group-never"]);
     expect(lastUpdate()).toMatchObject({ outcome: "hobby", cost_usd: 0.0064 });
   });
 
@@ -420,5 +420,62 @@ describe("deliverFailed", () => {
     await deliverFailed("lead-1", LEAD, "Firecrawl 502");
     expect(lastUpdate().outcome).toBe("failed");
     expect(String(lastUpdate().error)).toMatch(/Firecrawl 502[\s\S]*can't-see email also failed/);
+  });
+});
+
+describe("never-received group", () => {
+  const groupsOf = () => ml("/subscribers").map((c) => c.body!.groups as string[]);
+  const inNever = () => groupsOf().some((g) => g.includes("group-never"));
+
+  it("hobby joins it, in the same upsert", async () => {
+    await deliver("l", LEAD, { outcome: "hobby", compliment: "c", facts: FACTS, usage: USAGE, model: "m" });
+    expect(ml("/subscribers")).toHaveLength(1);
+    expect(groupsOf()[0]).toContain("group-never");
+  });
+
+  it("cant_see joins it", async () => {
+    await deliver("l", LEAD, { outcome: "cant_see", reason: "NO_PHOTO", usage: USAGE } as unknown as PipelineResult);
+    expect(groupsOf()[0]).toContain("group-never");
+  });
+
+  it("failed joins it", async () => {
+    await deliverFailed("l", LEAD, "boom");
+    expect(groupsOf()[0]).toContain("group-never");
+  });
+
+  it("failed joins it even when the can't-see note could not be sent", async () => {
+    resendStatus = 500;
+    mailerliteStatus = 500;
+    await deliverFailed("l", LEAD, "boom");
+    expect(inNever()).toBe(true);
+  });
+
+  it("held joins it, with just the name field", async () => {
+    await deliver("l", LEAD, { outcome: "held", reason: "r", content: CONTENT, issues: [], facts: FACTS, usage: USAGE, model: "m" });
+    const c = ml("/subscribers").find((x) => (x.body!.groups as string[]).includes("group-never"))!;
+    expect(c.body).toEqual({ email: "jane@example.com", fields: { name: "Jane" }, groups: ["group-never"] });
+  });
+
+  it("sent does not join it (nor does the MailerLite link-email fallback)", async () => {
+    await deliver("l", LEAD, sent());
+    resendStatus = 500;
+    await deliver("l2", LEAD, sent());
+    expect(inNever()).toBe(false);
+  });
+
+  it("unset env: no never-received call and no empty group id", async () => {
+    vi.stubEnv("MAILERLITE_HF_NEVER_RECEIVED_GROUP_ID", "");
+    await deliver("l", LEAD, { outcome: "hobby", compliment: "c", facts: FACTS, usage: USAGE, model: "m" });
+    await deliver("l", LEAD, { outcome: "held", reason: "r", content: CONTENT, issues: [], facts: FACTS, usage: USAGE, model: "m" });
+    expect(groupsOf()).toEqual([["group-123"]]);
+  });
+
+  it("a MailerLite 500 on held does not break the row update or the alert", async () => {
+    mailerliteStatus = 500;
+    await expect(
+      deliver("l", LEAD, { outcome: "held", reason: "r", content: CONTENT, issues: [], facts: FACTS, usage: USAGE, model: "m" }),
+    ).resolves.toBeUndefined();
+    expect(lastUpdate().outcome).toBe("held");
+    expect(resend()).toHaveLength(1);
   });
 });
