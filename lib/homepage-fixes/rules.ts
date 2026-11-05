@@ -1,5 +1,6 @@
 import { cleanSection } from "./mockup-clean";
 import type { ReportContent } from "./types";
+import { stripSymbols } from "./glyphs";
 
 export type RuleIssue = { field: string; level: "error" | "warning"; message: string };
 
@@ -52,7 +53,7 @@ export function fieldsOf(c: ReportContent): [string, string][] {
 const straighten = (t: string) => t.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
 
 export function fixText(t: string): string {
-  return straighten(t)
+  return straighten(stripSymbols(t))
     .replace(/\s*[—–]\s*/g, ", ")
     .replace(/(,\s*)+,/g, ",")
     .replace(/\s+,/g, ",")
