@@ -767,8 +767,9 @@ describe("never-received group", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
       const url = String(input);
       sent.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
-      if (url.startsWith("https://api.resend.com")) return new Response("boom", { status: 500 });
-      if (url.startsWith("https://connect.mailerlite.com")) return new Response("boom", { status: 500 });
+      const origin = new URL(url).origin;
+      if (origin === "https://api.resend.com") return new Response("boom", { status: 500 });
+      if (origin === "https://connect.mailerlite.com") return new Response("boom", { status: 500 });
       return new Response(new Uint8Array(PDF_BYTES), { status: 200 });
     }));
     expect((await postAndSettle(JANE)).outcome).toBe("failed");
