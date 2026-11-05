@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // The shared held-report delivery (the CLI and the admin re-send route). No Neon, Chromium or email:
 // the store, renderers, rules and deliver are fakes.
@@ -148,5 +148,71 @@ describe("the admin path: claimForRedeliver then deliverClaimed", () => {
     h.deliver.mockRejectedValue(new DeliveredNotRecordedError("L1", "delivered but not recorded"));
     await expect(deliverClaimed({ ...h.row!, outcome: "processing" } as never)).rejects.toBeInstanceOf(DeliveredNotRecordedError);
     expect(h.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("never-received group after a held report is sent", () => {
+  let calls: { url: string; method: string }[] = [];
+  let status = { get: 200, del: 204 };
+  beforeEach(() => {
+    calls = [];
+    status = { get: 200, del: 204 };
+    vi.stubEnv("MAILERLITE_API_KEY", "ml_test");
+    vi.stubEnv("MAILERLITE_HF_NEVER_RECEIVED_GROUP_ID", "group-never");
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn(async (input: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      calls.push({ url: String(input), method });
+      if (method === "DELETE") return new Response(null, { status: status.del });
+      return new Response(JSON.stringify({ data: { id: "sub-9" } }), { status: status.get });
+    }));
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+  const deleted = () => calls.filter((c) => c.method === "DELETE");
+
+  it("removes the person from the group once the report is delivered", async () => {
+    await redeliverHeld("L1");
+    expect(calls[0]).toEqual({ url: "https://connect.mailerlite.com/api/subscribers/jane%40x.com", method: "GET" });
+    expect(deleted()).toEqual([{ url: "https://connect.mailerlite.com/api/subscribers/sub-9/groups/group-never", method: "DELETE" }]);
+  });
+
+  it("the admin path removes them too", async () => {
+    const c = await claimForRedeliver("L1");
+    if (c.status !== "claimed") throw new Error("not claimed");
+    await deliverClaimed(c.row);
+    expect(deleted()).toHaveLength(1);
+  });
+
+  it("does not remove them when delivery fails before the email goes out", async () => {
+    h.deliver.mockRejectedValue(new Error("blob down"));
+    await expect(redeliverHeld("L1")).rejects.toThrow("blob down");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("removes them when the email went out but recording failed", async () => {
+    h.deliver.mockRejectedValue(new DeliveredNotRecordedError("L1", "x"));
+    await expect(redeliverHeld("L1")).rejects.toThrow();
+    expect(deleted()).toHaveLength(1);
+  });
+
+  it("a 404 (not a subscriber, or not in the group) and a 500 are both ignored", async () => {
+    status = { get: 404, del: 204 };
+    await expect(redeliverHeld("L1")).resolves.toMatchObject({ status: "sent" });
+    expect(deleted()).toHaveLength(0);
+    h.row!.outcome = "held";
+    status = { get: 200, del: 404 };
+    await expect(redeliverHeld("L1")).resolves.toMatchObject({ status: "sent" });
+    status = { get: 500, del: 500 };
+    await expect(redeliverHeld("L1")).resolves.toMatchObject({ status: "sent" });
+  });
+
+  it("unset env: no MailerLite call", async () => {
+    vi.stubEnv("MAILERLITE_HF_NEVER_RECEIVED_GROUP_ID", "");
+    await redeliverHeld("L1");
+    expect(calls).toHaveLength(0);
   });
 });

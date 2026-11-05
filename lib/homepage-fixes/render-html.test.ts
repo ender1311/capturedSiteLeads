@@ -122,6 +122,33 @@ describe("firstSectionHtml", () => {
   });
 });
 
+describe("firstSectionHtml placement fields (headline off faces)", () => {
+  const base = { ...(gabby.first_section as FirstSection), layout: "left" as const, headline: "Real Moments, Not Posed Memories" };
+  it("has copy and photo ids, default width and size, and glues the last two words", () => {
+    const h = firstSectionHtml(base, IMG);
+    expect(h).toContain('id="copy"');
+    expect(h).toContain('id="photo"');
+    expect(h).toContain("left:96px;width:640px");
+    expect(h).toContain("font-size:76px");
+    expect(h).toContain("Posed&nbsp;Memories</h1>");
+    expect(h).not.toContain("transform:scale(");
+  });
+  it("applies scale, width, zoom and the unglued headline", () => {
+    const h = firstSectionHtml({ ...base, layout: "right", headline_scale: 0.72, copy_width: 420, photo_zoom: 1.5, photo_focus: "20% 30%", headline_glue: false }, IMG);
+    expect(h).toContain("right:96px;width:420px");
+    expect(h).toContain(`font-size:${Math.round(76 * 0.72)}px`);
+    expect(h).toContain("transform:scale(1.5);transform-origin:20% 30%");
+    expect(h).toContain("Posed Memories</h1>");
+  });
+  it("ignores placement values out of range or of the wrong type", () => {
+    const h = firstSectionHtml({ ...base, headline_scale: 3, copy_width: "1px;color:red" as unknown as number, photo_zoom: 9 }, IMG);
+    expect(h).toContain("font-size:76px");
+    expect(h).toContain("left:96px;width:640px");
+    expect(h).not.toContain("transform:scale(");
+    expect(h).not.toContain("color:red");
+  });
+});
+
 describe("firstSectionHtml cleans brand and nav (gate defects 1, 2)", () => {
   it("renders at most 6 deduped nav items and no copyright in the brand", () => {
     const h = firstSectionHtml({

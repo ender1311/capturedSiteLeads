@@ -1,5 +1,5 @@
 import { put } from "@vercel/blob";
-import { addSubscriber, sendPdfEmail } from "@/lib/mailerlite";
+import { addSubscriber, addToNeverReceived, neverReceivedGroupId, removeFromNeverReceived, sendPdfEmail } from "@/lib/mailerlite";
 import { alertEmail, cantSeeEmail, hobbyEmail, reportEmail, type CantSeeReason, type Email } from "./emails";
 import type { PipelineResult } from "./pipeline";
 import { pdfFileName } from "./render-html";
@@ -115,8 +115,9 @@ async function upsertSubscriber(lead: DeliverLead, outcome: HfOutcome, extra: {
   fields.hf_outcome = outcome;
   fields.hf_sent_date = outcome === "sent" ? new Date().toISOString().slice(0, 10) : "";
   try {
-    // Only a sent report joins "Homepage Fixes delivered": Maggie's follow-up automation starts there.
-    const extraGroups = outcome === "sent" ? [process.env.MAILERLITE_HF_DELIVERED_GROUP_ID] : [];
+    // Anyone who won't get a report joins "Homepage Fixes: never received" in the same request, so
+    // Maggie's follow-up automation skips them. A sent report doesn't.
+    const extraGroups = outcome === "sent" ? [] : [neverReceivedGroupId()];
     await addSubscriber({ name: lead.name, email: lead.email, siteUrl: lead.siteUrl, pdfUrl: extra.pdfUrl, fields, extraGroups });
   } catch (err) {
     console.warn("MailerLite subscriber upsert failed:", (err as Error).message);
@@ -153,6 +154,9 @@ export async function deliver(leadId: string, lead: DeliverLead, result: Pipelin
           fix1: result.content.fixes[0].title,
           fix2: result.content.fixes[1].title,
         });
+        // An earlier submission (hobby, can't-see, held...) may have put them in "never received";
+        // this one got a report, so Maggie's follow-ups should reach them.
+        await removeFromNeverReceived(lead.email);
         await updateHfLead(leadId, {
           outcome: "sent", pdf_url: pdf.url, before_url: before.url, after_url: after.url,
           content: { ...result.content, fact_sheet: result.facts.sheet },
@@ -187,6 +191,7 @@ export async function deliver(leadId: string, lead: DeliverLead, result: Pipelin
         content: { ...result.content, fact_sheet: result.facts.sheet, issues: result.issues, held_reason: result.reason },
         ...usageCols(result), model: result.model,
       });
+      await addToNeverReceived(lead);
       const summary = result.issues.filter((i) => i.level === "error").map((i) => `${i.field}: ${i.message}`);
       await sendAlert("held", {
         id: leadId, name: lead.name, email: lead.email, site_url: lead.siteUrl,
@@ -234,6 +239,7 @@ export async function deliverFailed(leadId: string, lead: DeliverLead, error: st
   } catch (err) {
     const message = `${error}\nthe can't-see email also failed: ${err instanceof Error ? err.message : String(err)}`;
     await updateHfLead(leadId, { outcome: "failed", error: message });
+    await addToNeverReceived(lead);
     await sendAlert("failed", { ...alertLead, error: message });
     return;
   }
