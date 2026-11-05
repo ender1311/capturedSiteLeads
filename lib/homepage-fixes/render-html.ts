@@ -23,6 +23,11 @@ function imageUri(u: string): string {
 const cssFont = (f: string) => f.replace(/[^A-Za-z0-9 ]/g, "").trim();
 const cssColor = (c: string | undefined) => (c && /^#[0-9a-f]{3,8}$/i.test(c) ? c : undefined);
 const cssFocus = (f: string | undefined) => (f && /^\d{1,3}% \d{1,3}%$/.test(f.trim()) ? f.trim() : undefined);
+// Placement numbers (placement.ts): anything else falls back to the default.
+const num = (v: unknown, min: number, max: number) => (typeof v === "number" && Number.isFinite(v) && v >= min && v <= max ? v : undefined);
+const cssZoom = (z: unknown) => num(z, 1, 2) ?? 1;
+const cssScale = (k: unknown) => num(k, 0.5, 1) ?? 1;
+const cssWidth = (w: unknown) => { const n = num(w, 320, 900); return n === undefined ? undefined : Math.round(n); };
 
 /** Escape, and keep the last word glued to the one before it (no lone last word). */
 export function keepLast(s: string): string {
@@ -60,13 +65,22 @@ export function firstSectionHtml(section: FirstSection, photoDataUri: string, lo
         : layout === "center"
           ? "linear-gradient(180deg,rgba(0,0,0,.18),rgba(0,0,0,.42))"
           : "none";
-  const big = s.headline.length > 42 ? 64 : 76;
-  const head = `${s.eyebrow ? `<p style="margin:0 0 18px;font-family:'${bf}',sans-serif;font-size:17px;letter-spacing:.2em;text-transform:uppercase">${keepLast(s.eyebrow)}</p>` : ""}<h1 style="margin:0;font-family:'${hf}',serif;font-weight:${weight};font-size:${big}px;line-height:1.08;${s.uppercase_headline ? "text-transform:uppercase;letter-spacing:.04em;" : ""}text-wrap:balance">${keepLast(s.headline)}</h1>${s.subline ? `<p style="margin:24px 0 0;font-family:'${bf}',sans-serif;font-size:19px;line-height:1.5;letter-spacing:.14em;text-transform:uppercase;text-wrap:balance">${keepLast(s.subline)}</p>` : ""}${s.button ? `<span style="display:inline-block;margin-top:34px;font-family:'${bf}',sans-serif;font-size:16px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;padding:18px 40px;${accent ? `background:${accent};color:#FFFFFF;border:2px solid ${accent}` : "border:2px solid currentColor"}">${esc(s.button)}</span>` : ""}`;
+  const big = Math.round((s.headline.length > 42 ? 64 : 76) * cssScale(s.headline_scale));
+  const headline = s.headline_glue === false ? esc(s.headline) : keepLast(s.headline);
+  const head = `${s.eyebrow ? `<p style="margin:0 0 18px;font-family:'${bf}',sans-serif;font-size:17px;letter-spacing:.2em;text-transform:uppercase">${keepLast(s.eyebrow)}</p>` : ""}<h1 style="margin:0;font-family:'${hf}',serif;font-weight:${weight};font-size:${big}px;line-height:1.08;${s.uppercase_headline ? "text-transform:uppercase;letter-spacing:.04em;" : ""}text-wrap:balance">${headline}</h1>${s.subline ? `<p style="margin:24px 0 0;font-family:'${bf}',sans-serif;font-size:19px;line-height:1.5;letter-spacing:.14em;text-transform:uppercase;text-wrap:balance">${keepLast(s.subline)}</p>` : ""}${s.button ? `<span style="display:inline-block;margin-top:34px;font-family:'${bf}',sans-serif;font-size:16px;font-weight:600;letter-spacing:.18em;text-transform:uppercase;padding:18px 40px;${accent ? `background:${accent};color:#FFFFFF;border:2px solid ${accent}` : "border:2px solid currentColor"}">${esc(s.button)}</span>` : ""}`;
+  const width = cssWidth(s.copy_width);
   const copy =
     layout === "box"
-      ? `<div style="position:absolute;left:50%;top:54%;transform:translate(-50%,-50%);width:720px;box-sizing:border-box;background:rgba(255,255,255,.92);color:#222;padding:56px 60px;text-align:center">${head}</div>`
-      : `<div style="position:absolute;${layout === "left" ? "left:96px;width:640px;text-align:left" : layout === "right" ? "right:96px;width:600px;text-align:left" : "left:50%;transform:translateX(-50%);width:900px;text-align:center"};top:${navStyle === "bar" ? "46%" : "52%"};translate:0 -50%;color:#FFFFFF">${head}</div>`;
-  const photo = `<div style="position:relative;flex:1;background:url('${esc(imageUri(photoDataUri))}') ${esc(cssFocus(s.photo_focus) || "50% 40%")}/cover no-repeat"><div style="position:absolute;inset:0;background:${shade}"></div>${copy}</div>`;
+      ? `<div id="copy" style="position:absolute;left:50%;top:54%;transform:translate(-50%,-50%);width:720px;box-sizing:border-box;background:rgba(255,255,255,.92);color:#222;padding:56px 60px;text-align:center">${head}</div>`
+      : `<div id="copy" style="position:absolute;${layout === "left" ? `left:96px;width:${width ?? 640}px;text-align:left` : layout === "right" ? `right:96px;width:${width ?? 600}px;text-align:left` : "left:50%;transform:translateX(-50%);width:900px;text-align:center"};top:${navStyle === "bar" ? "46%" : "52%"};translate:0 -50%;color:#FFFFFF">${head}</div>`;
+  // Zoom scales the cover-sized photo about its focus point: the same as a background-size of
+  // zoom times cover at that position, without needing the photo's own size.
+  const focus = esc(cssFocus(s.photo_focus) || "50% 40%");
+  const zoom = cssZoom(s.photo_zoom);
+  const bg = `url('${esc(imageUri(photoDataUri))}') ${focus}/cover no-repeat`;
+  const photo = zoom > 1
+    ? `<div id="photo" style="position:relative;flex:1;overflow:hidden"><div style="position:absolute;inset:0;background:${bg};transform:scale(${zoom});transform-origin:${focus}"></div><div style="position:absolute;inset:0;background:${shade}"></div>${copy}</div>`
+    : `<div id="photo" style="position:relative;flex:1;background:${bg}"><div style="position:absolute;inset:0;background:${shade}"></div>${copy}</div>`;
   return `<!doctype html><html><head><meta charset="utf-8">${fams ? `<link href="https://fonts.googleapis.com/css2?${fams}&display=swap" rel="stylesheet">` : ""}<style>html,body{margin:0}</style></head><body><div id="frame" style="position:relative;width:1400px;height:878px;overflow:hidden;display:flex;flex-direction:column;background:#fff">${s.nav_position === "bottom" ? photo + nav : nav + photo}</div></body></html>`;
 }
 

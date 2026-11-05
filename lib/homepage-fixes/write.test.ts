@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { MockLanguageModelV3 } from "ai/test";
 import { SYSTEM_PROMPT, userMessage } from "./prompt";
-import { addUsage, costOf, lookCheck, rateLimit, repairFields, timeouts, writeReport, WrittenIncompleteError } from "./write";
+import { addUsage, costOf, locatePeople, lookCheck, rateLimit, repairFields, timeouts, writeReport, WrittenIncompleteError } from "./write";
 import { resolveModel } from "./model";
 import type { Facts } from "./facts";
 import type { ReportContent } from "./types";
@@ -413,6 +413,55 @@ describe("lookCheck", () => {
       expect(thinking(m, 0)).toBe("low");
     });
   }
+});
+
+describe("lookCheck wording (Maggie, 2026-11-05)", () => {
+  it("asks about words on faces and upper bodies, and allows words over legs or someone turned away", async () => {
+    const m = mock({ json: { faces_ok: true, headline_readable: true, looks_like_template: false } });
+    await lookCheck(Buffer.from([1]), m);
+    const text = promptText(m);
+    expect(text).toContain("No words (headline, line under it, or button) sit on any person's face or upper body");
+    expect(text).toContain("Words over legs, the lower part of the photo, or someone turned away are fine. True if there are no people.");
+  });
+});
+
+describe("locatePeople", () => {
+  it("returns clamped body and face boxes and the call's usage", async () => {
+    const m = mock({
+      json: { people: [
+        { face_2d: [120, 250, 250, 350], body_2d: [100, 200, 600, 400] },
+        { face_2d: [10, 20, 30], body_2d: [-5, 500, 1200, 700] }, // bad face: body only
+        { face_2d: [100, 100, 200, 200], body_2d: [500, 500, 400, 600] }, // bad body: the face stands in
+        { face_2d: [1, 2], body_2d: [3] }, // nothing usable
+      ] },
+      input: 400, output: 60,
+    });
+    const r = await locatePeople(Buffer.from([1, 2, 3]), "image/webp", m);
+    expect(r.boxes).toEqual([
+      { box: [100, 200, 600, 400], face: [120, 250, 250, 350] },
+      { box: [0, 500, 1000, 700] },
+      { box: [100, 100, 200, 200], face: [100, 100, 200, 200] },
+    ]);
+    expect(r.usage).toMatchObject({ inputTokens: 400, outputTokens: 60, calls: 1 });
+    expect(r.usage.costUsd).toBeCloseTo(costOf({ inputTokens: 400, outputTokens: 60 }, MODEL), 12);
+    expect(thinking(m, 0)).toBe("low");
+    const prompt = promptText(m);
+    expect(prompt).toContain("face_2d: the face alone");
+    expect(prompt).toContain("top of the head down to the waist");
+    const file = (m.doGenerateCalls[0].prompt[0].content as { type: string; mediaType?: string }[]).find((c) => c.type === "file");
+    expect(file?.mediaType).toBe("image/webp");
+  });
+
+  it("an empty list when there is nobody", async () => {
+    expect((await locatePeople(Buffer.from([1]), "image/jpeg", mock({ json: { people: [] } }))).boxes).toEqual([]);
+  });
+
+  it("any error gives no boxes and no usage, never a throw", async () => {
+    const boom = new MockLanguageModelV3({ modelId: MODEL, doGenerate: async () => { throw new Error("boom"); } });
+    expect(await locatePeople(Buffer.from([1]), "image/jpeg", boom)).toEqual({ boxes: [], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 } });
+    const junk = mock({ json: { nope: true } });
+    expect((await locatePeople(Buffer.from([1]), "image/jpeg", junk)).boxes).toEqual([]);
+  });
 });
 
 describe("cost helpers", () => {

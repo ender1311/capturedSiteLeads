@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { fillReport } from "./render-html";
-import { renderAfter, renderContactSheet, renderPdf } from "./render";
+import { placeAfter, renderAfter, renderContactSheet, renderPdf, withBrowser } from "./render";
 import type { ReportContent } from "./types";
 
 const GAB = "/Users/danluk/Downloads/your-top-homepage-fixes/examples/gabby";
@@ -33,5 +33,21 @@ describe.skipIf(!have)("chromium rendering", () => {
     fs.writeFileSync(path.join(process.cwd(), "out/gabby-sheet.jpg"), sheet);
     expect(pages(pdf)).toBe(9);
     expect(overflow).toEqual([]);
+  }, 120_000);
+});
+
+describe.skipIf(!have)("chromium placement", () => {
+  it("never lets an uppercase headline overflow, and moves the words off a person", async () => {
+    const photo = uri(`${GAB}/photos/photo-01.jpg`, "image/jpeg");
+    const s = { ...gabby.first_section, layout: "left" as const, uppercase_headline: true, headline: "Real Moments, Not Posed Memories" };
+    await withBrowser(async () => {
+      const plain = await placeAfter(s, photo);
+      expect(plain.clean).toBe(true); // no people: only overflow matters
+      const crowded = await placeAfter(s, photo, undefined, [{ box: [100, 0, 700, 500] }]); // someone on the left half
+      expect(crowded.clean).toBe(true);
+      expect(crowded.overlap).toBe(0);
+      expect(crowded.section.layout).not.toBe("left");
+      expect(crowded.image.subarray(0, 2).toString("hex")).toBe("ffd8");
+    });
   }, 120_000);
 });

@@ -29,6 +29,8 @@ export type FirstSection = {           // mirrors skill references/content-schem
   heading_font: string; heading_weight?: number; body_font: string;
   uppercase_headline: boolean; eyebrow?: string;
   headline: string; subline: string; button: string; accent?: string;
+  // Set by the mockup's placement search (placement.ts) only when not the default.
+  photo_zoom?: number; headline_scale?: number; copy_width?: number; headline_glue?: boolean;
 };
 export type Fix = { title: string; noticed: string; why: string; changes: [string, string, string] };
 export type ReportContent = {

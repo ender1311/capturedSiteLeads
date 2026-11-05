@@ -1,11 +1,11 @@
 import { DEFAULT_MODEL } from "@/lib/models";
 import { captureSite, CaptureError, imageMime } from "./capture";
 import { buildFacts, type Facts } from "./facts";
-import { renderAfter, renderContactSheet, renderPdf, withBrowser } from "./render";
+import { placeAfter, renderContactSheet, renderPdf, withBrowser } from "./render";
 import { fillReport } from "./render-html";
 import { autoFix, checkContent, checkText, fieldsOf, fixText, type RuleIssue } from "./rules";
 import type { Asset, Capture, FirstSection, FitFlag, ReportContent, Usage } from "./types";
-import { addUsage, lookCheck, repairFields, writeReport, type Written } from "./write";
+import { addUsage, locatePeople, lookCheck, repairFields, writeReport, type Written } from "./write";
 
 // One report, end to end: capture → facts → fit flags → contact sheet → Gemini → rules →
 // mockup + look check → PDF + overflow check. Delivery is the caller's job ("sent" = ready to send).
@@ -18,13 +18,13 @@ export type PipelineResult =
 
 export type Stages = {
   capture: typeof captureSite; write: typeof writeReport; repair: typeof repairFields; look: typeof lookCheck;
-  renderAfter: typeof renderAfter; renderPdf: typeof renderPdf; renderContactSheet: typeof renderContactSheet;
+  locate: typeof locatePeople; placeAfter: typeof placeAfter; renderPdf: typeof renderPdf; renderContactSheet: typeof renderContactSheet;
   now: () => number; // injectable clock for the deadline
 };
 
 const REAL: Stages = {
   capture: captureSite, write: writeReport, repair: repairFields, look: lookCheck,
-  renderAfter, renderPdf, renderContactSheet, now: () => Date.now(),
+  locate: locatePeople, placeAfter, renderPdf, renderContactSheet, now: () => Date.now(),
 };
 
 // The route has 300 s; stop starting optional steps when less than two minutes of the budget are
@@ -193,12 +193,17 @@ async function run(input: RunInput, stages: Partial<Stages>): Promise<PipelineRe
     if (errors(issues).length) return held("rule check failed after one repair", issues);
   }
 
-  // 5. Mockup and look check: as written, then the alternate layout and focus, then the next photo.
-  const look = async (section: FirstSection, index: number) => {
-    const after = await s.renderAfter(section, photoUris[index], logoUri);
-    const l = await s.look(after, model);
+  // 5. Mockup and look check. Gemini finds the people in the photo, the renderer places the words
+  // off them (placement.ts: smaller, narrower, the other side, or the photo shifted), and the look
+  // check judges the result. If it fails: the next photo, the same way.
+  const look = async (sec: FirstSection, index: number) => {
+    const photo = capture.photos[index];
+    const loc = await s.locate(photo.data, photo.mime, model);
+    usage = addUsage(usage, loc.usage);
+    const placed = await s.placeAfter(sec, photoUris[index], logoUri, loc.boxes);
+    const l = await s.look(placed.image, model);
     usage = addUsage(usage, l.usage);
-    return { after, l };
+    return { after: placed.image, section: placed.section, l };
   };
   type Look = { faces_ok: boolean; headline_readable: boolean; looks_like_template: boolean };
   const lookProblems = (l: Look) => [
@@ -210,29 +215,25 @@ async function run(input: RunInput, stages: Partial<Stages>): Promise<PipelineRe
   const lookIssue = (l: Look): RuleIssue => ({ field: "first_section", level: "error", message: lookMessage(l) });
 
   // Every render tried, so the best one can go out if none passes.
+  // The section stored is the one rendered (the placement's layout, focus, zoom and sizes).
   const shots: { section: FirstSection; shot: Awaited<ReturnType<typeof look>> }[] = [];
   const tryLook = async (sec: FirstSection, index: number) => {
     const shot = await look(sec, index);
-    shots.push({ section: sec, shot });
+    shots.push({ section: shot.section, shot });
     return shot;
   };
 
   const base = content.first_section;
-  let section = base;
-  let shot = await tryLook(section, photoIndex);
+  let shot = await tryLook(base, photoIndex);
+  let section = shot.section;
   let lookFlag: string | null = null;
-  if (!shot.l.ok) {
-    if (!hasTime()) return outOfTime("the look-check re-render", [...issues, lookIssue(shot.l)]);
-    section = { ...base, layout: written.alt_layout, photo_focus: written.alt_photo_focus };
-    shot = await tryLook(section, photoIndex);
-  }
   if (!shot.l.ok) {
     const n = capture.photos.length;
     const next = n > 1 ? (photoIndex + 1) % n : -1;
     if (next >= 0) {
       if (!hasTime()) return outOfTime("the next-photo look check", [...issues, lookIssue(shot.l)]);
-      section = { ...base, photo: photoKey(next, capture.photos[next].mime), photo_focus: NEXT_PHOTO_FOCUS };
-      shot = await tryLook(section, next);
+      shot = await tryLook({ ...base, photo: photoKey(next, capture.photos[next].mime), photo_focus: NEXT_PHOTO_FOCUS }, next);
+      section = shot.section;
     }
   }
   if (!shot.l.ok) {
