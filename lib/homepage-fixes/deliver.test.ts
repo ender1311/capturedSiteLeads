@@ -463,6 +463,11 @@ describe("never-received group", () => {
     expect(inNever()).toBe(false);
   });
 
+  it("sent removes them from it (an earlier hobby or held submission may have put them there)", async () => {
+    await deliver("l", LEAD, sent());
+    expect(calls.some((c) => c.method === "DELETE" && c.url.endsWith("/subscribers/ml-1/groups/group-never"))).toBe(true);
+  });
+
   it("unset env: no never-received call and no empty group id", async () => {
     vi.stubEnv("MAILERLITE_HF_NEVER_RECEIVED_GROUP_ID", "");
     await deliver("l", LEAD, { outcome: "hobby", compliment: "c", facts: FACTS, usage: USAGE, model: "m" });

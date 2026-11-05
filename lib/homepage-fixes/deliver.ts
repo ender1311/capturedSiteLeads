@@ -1,5 +1,5 @@
 import { put } from "@vercel/blob";
-import { addSubscriber, addToNeverReceived, neverReceivedGroupId, sendPdfEmail } from "@/lib/mailerlite";
+import { addSubscriber, addToNeverReceived, neverReceivedGroupId, removeFromNeverReceived, sendPdfEmail } from "@/lib/mailerlite";
 import { alertEmail, cantSeeEmail, hobbyEmail, reportEmail, type CantSeeReason, type Email } from "./emails";
 import type { PipelineResult } from "./pipeline";
 import { pdfFileName } from "./render-html";
@@ -154,6 +154,9 @@ export async function deliver(leadId: string, lead: DeliverLead, result: Pipelin
           fix1: result.content.fixes[0].title,
           fix2: result.content.fixes[1].title,
         });
+        // An earlier submission (hobby, can't-see, held...) may have put them in "never received";
+        // this one got a report, so Maggie's follow-ups should reach them.
+        await removeFromNeverReceived(lead.email);
         await updateHfLead(leadId, {
           outcome: "sent", pdf_url: pdf.url, before_url: before.url, after_url: after.url,
           content: { ...result.content, fact_sheet: result.facts.sheet },
