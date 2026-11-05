@@ -10,6 +10,7 @@ Design: [docs/superpowers/specs/2026-11-03-homepage-fixes-design.md](./superpowe
 - [ ] **Firecrawl has credits.** Check the Firecrawl dashboard (https://www.firecrawl.dev/app) shows credits left on the account whose key is `FIRECRAWL_API_KEY`.
 - [ ] **Resend domain capturedsites.com is verified.** It was confirmed verified on 2026-11-03; re-check Resend → Domains shows Verified. Without it, reports fall back to MailerLite's link-only email (no PDF attached) and every alert to Dan is lost.
 - [ ] **MailerLite "Lead Generator Follow-ups" automation is paused, or rewritten by Maggie.** Otherwise its roadmap copy goes to every new homepage-fixes, hobby and can't-see subscriber.
+- [ ] **Maggie's "Your Top Homepage Fixes: delivery + follow-ups" automation has no step that sends the PDF.** A sent report also joins the "Homepage Fixes delivered" group (`MAILERLITE_HF_DELIVERED_GROUP_ID`, 203061051539850425), which triggers that automation. The app already emails the PDF, so a delivery step there would send it twice.
 - [ ] **One local CLI run produces a PDF.** Run the step 7 command on one real site (or `--from-capture out/<folder>` to skip Firecrawl) and open the PDF it writes under `out/`.
 
 Only then merge.

@@ -27,7 +27,12 @@ export async function addSubscriber(input: {
   /** Sent only when non-empty, so a later upsert never blanks an earlier PDF link. */
   pdfUrl?: string;
   fields?: Record<string, string>;
+  /** Extra MailerLite group ids to join on top of the main group (empty ids are skipped). */
+  extraGroups?: (string | undefined)[];
 }): Promise<void> {
+  const groups = [process.env.MAILERLITE_GROUP_ID, ...(input.extraGroups ?? [])].filter(
+    (g): g is string => typeof g === "string" && g.trim() !== "",
+  );
   await ml("/subscribers", {
     method: "POST",
     body: JSON.stringify({
@@ -38,7 +43,7 @@ export async function addSubscriber(input: {
         ...(input.pdfUrl ? { pdf_url: input.pdfUrl } : {}),
         ...input.fields,
       },
-      groups: [process.env.MAILERLITE_GROUP_ID],
+      groups,
     }),
   });
 }
