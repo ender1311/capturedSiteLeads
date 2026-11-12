@@ -193,7 +193,7 @@ describe("discoverPages", () => {
         { path: "/weddings/", type: "Portfolio", target: "/weddings/", decide: true },
       ],
     });
-    expect(net.calls.some((c) => c.url.includes("other.com"))).toBe(false);
+    expect(net.calls.some((c) => new URL(c.url).hostname === "other.com")).toBe(false);
   });
 
   it("survives a sitemap index that lists itself", async () => {
@@ -250,5 +250,6 @@ describe("toPages", () => {
 
   it("locs decodes entities", () => {
     expect(locs("<loc> https://x.com/a?b=1&amp;c=2 </loc>")).toEqual(["https://x.com/a?b=1&c=2"]);
+    expect(locs("<loc>https://x.com/a?q=&amp;lt;b</loc>")).toEqual(["https://x.com/a?q=&lt;b"]);
   });
 });

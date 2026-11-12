@@ -125,7 +125,7 @@ export async function safeFetch(start: URL, ctx: Ctx): Promise<string | null> {
 
 const bareHost = (h: string) => h.toLowerCase().replace(/^www\./, "");
 const decodeXml = (s: string) =>
-  s.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+  s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, "&"); // &amp; last: no double unescape
 const PAGE_EXT = /\.(html?|php|aspx?|pdf)$/i;
 
 export function locs(xml: string): string[] {
