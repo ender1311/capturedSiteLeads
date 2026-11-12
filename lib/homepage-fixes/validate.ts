@@ -215,7 +215,7 @@ export async function isPublicUrl(url: URL, lookup: Lookup = defaultLookup): Pro
   return (await vet(url, lookup)) === null;
 }
 
-async function readCapped(res: Response, cap: number): Promise<string> {
+export async function readCapped(res: Response, cap: number): Promise<string> {
   if (!res.body) return "";
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
