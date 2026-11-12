@@ -13,6 +13,7 @@ const PUBLIC_PATHS = new Set([
   "/api/homepage-fixes",
   "/api/homepage-fixes/check",
   "/api/tools/site-pages", // the Rebuild Without Losing SEO page
+  "/api/tools/town-keywords", // the Small-Town SEO Finder page
   "/homepage-fixes-check.js",
   "/api/cron/homepage-fixes",
   "/api/metrics/v1",
