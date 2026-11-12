@@ -146,3 +146,23 @@ export async function capRemaining(reportType: ReportType): Promise<number> {
   const rows = await todaysRows(reportType);
   return Math.max(0, dailyCap(reportType) - rows.filter((r) => usesCap(reportType, r)).length);
 }
+
+/**
+ * Per-key sliding 10-minute window on the check_hits table: records this hit and returns true when
+ * the key already had `limit` hits (so the first `limit` requests pass). Prefix the IP with the
+ * tool's name so tools don't share a window. Any DB problem fails open.
+ */
+export async function overWindowLimit(key: string, limit: number): Promise<boolean> {
+  try {
+    const rows = (await sql()`
+      with ins as (insert into check_hits (ip) values (${key}) returning 1),
+           old as (delete from check_hits where at < now() - interval '10 minutes' returning 1)
+      select count(*)::int as n from check_hits
+      where ip = ${key} and at > now() - interval '10 minutes'
+    `) as { n: number }[];
+    return Number(rows[0]?.n ?? 0) >= limit;
+  } catch (e) {
+    console.warn(`rate limit skipped: ${(e as Error).message}`);
+    return false;
+  }
+}

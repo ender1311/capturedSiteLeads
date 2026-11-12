@@ -12,6 +12,7 @@ const PUBLIC_PATHS = new Set([
   "/api/lead",
   "/api/homepage-fixes",
   "/api/homepage-fixes/check",
+  "/api/tools/site-pages", // the Rebuild Without Losing SEO page
   "/homepage-fixes-check.js",
   "/api/cron/homepage-fixes",
   "/api/metrics/v1",
