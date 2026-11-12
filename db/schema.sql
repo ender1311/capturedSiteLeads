@@ -58,3 +58,7 @@ create index if not exists leads_resend_email_id_idx on leads (resend_email_id);
 create table if not exists scrape_cache (domain text primary key, data jsonb not null, created_at timestamptz not null default now());
 create table if not exists check_hits (ip text not null, at timestamptz not null default now());
 create index if not exists check_hits_ip_at_idx on check_hits (ip, at);
+-- Small-Town SEO Finder (2026-11-11): 30-day cache of Keywords Everywhere volumes per (niche,
+-- normalized town), and the per-UTC-day count of uncached town lookups (the paid API's cost cap).
+create table if not exists keyword_cache (niche text not null, town text not null, terms jsonb not null, created_at timestamptz not null default now(), primary key (niche, town));
+create table if not exists keyword_lookups (day date primary key, n int not null);
